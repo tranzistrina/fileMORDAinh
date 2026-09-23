@@ -188,6 +188,27 @@ def generate_thumbnail(path, file_id, time_sec=10):
 def safe_upload_name(filename):
     return secure_filename(filename) or "uploaded_file"
 
+def is_private_file(file_id):
+    with sqlite3.connect(DB) as conn:
+        row = conn.execute(
+            """SELECT 1
+               FROM file_category fc
+               JOIN categories c ON c.id = fc.category_id
+               WHERE fc.file_id = ? AND LOWER(TRIM(c.name)) = 'privat'
+               LIMIT 1""",
+            (file_id,),
+        ).fetchone()
+    return row is not None
+
+def file_id_by_filename(filename):
+    with sqlite3.connect(DB) as conn:
+        row = conn.execute("SELECT id FROM files WHERE filename = ?", (filename,)).fetchone()
+    return row[0] if row else None
+
+def private_file_by_filename(filename):
+    file_id = file_id_by_filename(filename)
+    return file_id is not None and is_private_file(file_id)
+
 def temp_chunk_path(filename, chunk_number):
     return TEMP_FOLDER / f"{filename}.part{chunk_number}"
 
@@ -256,10 +277,21 @@ def index():
     c = conn.cursor()
 
     if category:
-        query = """SELECT f.* FROM files f JOIN file_category fc ON f.id = fc.file_id WHERE fc.category_id = ?"""
-        params = (category,)
+        query = """SELECT f.* FROM files f
+                   JOIN file_category fc ON f.id = fc.file_id
+                   WHERE fc.category_id = ?"""
+        params = [category]
     else:
-        query, params = "SELECT * FROM files", ()
+        query, params = "SELECT * FROM files", []
+
+    if not is_admin():
+        query += """ AND NOT EXISTS (
+            SELECT 1
+            FROM file_category private_fc
+            JOIN categories private_c ON private_c.id = private_fc.category_id
+            WHERE private_fc.file_id = f.id
+              AND LOWER(TRIM(private_c.name)) = 'privat'
+        )"""
 
     if sort == "views":
         query += " ORDER BY views DESC"
@@ -268,8 +300,13 @@ def index():
     else:
         query += " ORDER BY upload_date DESC"
 
-    files = c.execute(query, params).fetchall()
-    categories = c.execute("SELECT * FROM categories ORDER BY name ASC").fetchall()
+    files = c.execute(query, tuple(params)).fetchall()
+    if is_admin():
+        categories = c.execute("SELECT * FROM categories ORDER BY name ASC").fetchall()
+    else:
+        categories = c.execute(
+            "SELECT * FROM categories WHERE LOWER(TRIM(name)) <> 'privat' ORDER BY name ASC"
+        ).fetchall()
     file_categories = c.execute("SELECT * FROM file_category").fetchall()
     conn.close()
 
@@ -336,11 +373,21 @@ def scan_files():
 
 @app.route("/file/<int:file_id>", methods=["GET", "POST"])
 def file_page(file_id):
-    if request.method == "POST" and not is_admin():
-        return redirect(url_for("login", next=request.full_path))
-
     conn = get_db()
     c = conn.cursor()
+    file = c.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
+    if not file:
+        conn.close()
+        abort(404)
+
+    if is_private_file(file_id) and not is_admin():
+        conn.close()
+        abort(404)
+
+    if request.method == "POST" and not is_admin():
+        conn.close()
+        return redirect(url_for("login", next=request.full_path))
+
     if request.method == "POST":
         title = request.form.get("title", "").strip()
         description = request.form.get("description", "")
@@ -366,11 +413,12 @@ def file_page(file_id):
 
     c.execute("UPDATE files SET views = views + 1 WHERE id=?", (file_id,))
     conn.commit()
-    file = c.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
-    if not file:
-        conn.close()
-        abort(404)
-    categories = c.execute("SELECT * FROM categories ORDER BY name ASC").fetchall()
+    if is_admin():
+        categories = c.execute("SELECT * FROM categories ORDER BY name ASC").fetchall()
+    else:
+        categories = c.execute(
+            "SELECT * FROM categories WHERE LOWER(TRIM(name)) <> 'privat' ORDER BY name ASC"
+        ).fetchall()
     file_cats = [row["category_id"] for row in c.execute("SELECT category_id FROM file_category WHERE file_id=?", (file_id,)).fetchall()]
     conn.close()
     return render_template("file.html", file=file, categories=categories, file_cats=file_cats)
@@ -451,14 +499,24 @@ def finalize_upload():
 
 @app.route("/uploads/<path:filename>")
 def uploaded_file(filename):
+    if private_file_by_filename(filename) and not is_admin():
+        abort(404)
     return send_from_directory(UPLOAD_FOLDER, filename)
 
 @app.route("/download/<path:filename>")
 def download_file(filename):
+    if private_file_by_filename(filename) and not is_admin():
+        abort(404)
     return send_from_directory(UPLOAD_FOLDER, filename, as_attachment=True)
 
 @app.route("/thumbnails/<path:filename>")
 def thumb_file(filename):
+    try:
+        file_id = int(Path(filename).stem)
+    except ValueError:
+        abort(404)
+    if is_private_file(file_id) and not is_admin():
+        abort(404)
     return send_from_directory(THUMB_FOLDER, filename)
 
 if __name__ == "__main__":
