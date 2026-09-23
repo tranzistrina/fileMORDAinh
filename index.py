@@ -1,3 +1,4 @@
+import hashlib
 import hmac
 import os
 import secrets
@@ -207,7 +208,17 @@ def setup():
         elif password != password2:
             error = "Пароли не совпадают."
         else:
-            set_setting("admin_password_hash", generate_password_hash(password))
+            # Some macOS Python 3.9 builds expose no hashlib.scrypt.
+            # Prefer scrypt when available and fall back to PBKDF2 otherwise.
+            hash_method = (
+                "scrypt"
+                if hasattr(hashlib, "scrypt")
+                else "pbkdf2:sha256:600000"
+            )
+            set_setting(
+                "admin_password_hash",
+                generate_password_hash(password, method=hash_method),
+            )
             consume_setup_code()
             session.clear()
             session["is_admin"] = True
