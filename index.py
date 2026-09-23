@@ -69,7 +69,10 @@ def init_db():
             views INTEGER DEFAULT 0,
             length REAL,
             filesize INTEGER,
-            upload_date TEXT
+            upload_date TEXT,
+            artist TEXT NOT NULL DEFAULT '',
+            album TEXT NOT NULL DEFAULT '',
+            track_number INTEGER
         )""")
         c.execute("""CREATE TABLE IF NOT EXISTS categories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -84,6 +87,17 @@ def init_db():
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         )""")
+
+        existing_columns = {row[1] for row in c.execute("PRAGMA table_info(files)").fetchall()}
+        migrations = {
+            "artist": "ALTER TABLE files ADD COLUMN artist TEXT NOT NULL DEFAULT ''",
+            "album": "ALTER TABLE files ADD COLUMN album TEXT NOT NULL DEFAULT ''",
+            "track_number": "ALTER TABLE files ADD COLUMN track_number INTEGER",
+        }
+        for column, statement in migrations.items():
+            if column not in existing_columns:
+                c.execute(statement)
+        c.execute("INSERT OR IGNORE INTO categories(name) VALUES ('aud')")
         conn.commit()
 
 init_db()
@@ -200,6 +214,18 @@ def is_private_file(file_id):
         ).fetchone()
     return row is not None
 
+def is_aud_file(file_id):
+    with sqlite3.connect(DB) as conn:
+        row = conn.execute(
+            """SELECT 1
+               FROM file_category fc
+               JOIN categories c ON c.id = fc.category_id
+               WHERE fc.file_id = ? AND LOWER(TRIM(c.name)) = 'aud'
+               LIMIT 1""",
+            (file_id,),
+        ).fetchone()
+    return row is not None
+
 def file_id_by_filename(filename):
     with sqlite3.connect(DB) as conn:
         row = conn.execute("SELECT id FROM files WHERE filename = ?", (filename,)).fetchone()
@@ -273,6 +299,10 @@ def logout():
 def index():
     sort = request.args.get("sort", "date")
     category = request.args.get("category")
+    view = request.args.get("view", "library")
+    if view not in {"library", "audio"}:
+        view = "library"
+
     conn = get_db()
     c = conn.cursor()
 
@@ -293,6 +323,24 @@ def index():
               AND LOWER(TRIM(private_c.name)) = 'privat'
         )"""
 
+    if view == "audio":
+        query += """ AND f.file_type = 'audio'
+            AND EXISTS (
+                SELECT 1
+                FROM file_category aud_fc
+                JOIN categories aud_c ON aud_c.id = aud_fc.category_id
+                WHERE aud_fc.file_id = f.id
+                  AND LOWER(TRIM(aud_c.name)) = 'aud'
+            )"""
+    else:
+        query += """ AND NOT EXISTS (
+            SELECT 1
+            FROM file_category aud_fc
+            JOIN categories aud_c ON aud_c.id = aud_fc.category_id
+            WHERE aud_fc.file_id = f.id
+              AND LOWER(TRIM(aud_c.name)) = 'aud'
+        )"""
+
     if sort == "views":
         query += " ORDER BY views DESC"
     elif sort == "length":
@@ -301,16 +349,59 @@ def index():
         query += " ORDER BY upload_date DESC"
 
     files = c.execute(query, tuple(params)).fetchall()
-    if is_admin():
-        categories = c.execute("SELECT * FROM categories ORDER BY name ASC").fetchall()
-    else:
-        categories = c.execute(
-            "SELECT * FROM categories WHERE LOWER(TRIM(name)) <> 'privat' ORDER BY name ASC"
-        ).fetchall()
+    categories = c.execute(
+        "SELECT * FROM categories ORDER BY name ASC"
+    ).fetchall() if is_admin() else c.execute(
+        "SELECT * FROM categories WHERE LOWER(TRIM(name)) NOT IN ('privat', 'aud') ORDER BY name ASC"
+    ).fetchall()
     file_categories = c.execute("SELECT * FROM file_category").fetchall()
     conn.close()
 
-    return render_template("index.html", files=files, categories=categories, file_categories=file_categories)
+    return render_template(
+        "index.html", files=files, categories=categories,
+        file_categories=file_categories, view=view,
+    )
+
+
+@app.route("/audio")
+def audio_page():
+    search = request.args.get("q", "").strip()
+    conn = get_db()
+    c = conn.cursor()
+    query = """SELECT f.* FROM files f
+               WHERE f.file_type = 'audio'
+                 AND EXISTS (
+                     SELECT 1 FROM file_category aud_fc
+                     JOIN categories aud_c ON aud_c.id = aud_fc.category_id
+                     WHERE aud_fc.file_id = f.id
+                       AND LOWER(TRIM(aud_c.name)) = 'aud'
+                 )"""
+    params = []
+    if not is_admin():
+        query += """ AND NOT EXISTS (
+            SELECT 1 FROM file_category private_fc
+            JOIN categories private_c ON private_c.id = private_fc.category_id
+            WHERE private_fc.file_id = f.id
+              AND LOWER(TRIM(private_c.name)) = 'privat'
+        )"""
+    if search:
+        query += """ AND (
+            LOWER(f.title) LIKE ?
+            OR LOWER(COALESCE(f.artist, '')) LIKE ?
+            OR LOWER(COALESCE(f.album, '')) LIKE ?
+            OR LOWER(f.filename) LIKE ?
+        )"""
+        needle = f"%{search.lower()}%"
+        params.extend([needle, needle, needle, needle])
+    query += """ ORDER BY
+        LOWER(COALESCE(f.album, '')) ASC,
+        CASE WHEN f.track_number IS NULL THEN 1 ELSE 0 END,
+        f.track_number ASC,
+        LOWER(f.title) ASC"""
+    tracks = c.execute(query, tuple(params)).fetchall()
+    conn.close()
+    return render_template("audio.html", tracks=tracks, search=search)
+
 
 @app.route("/add_category", methods=["POST"])
 @admin_required
@@ -370,7 +461,11 @@ def scan_files():
                   (file_path.name, file_path.name, "Автоматически добавлено", ftype, length,
                    file_path.stat().st_size, utc_now_iso()))
         file_id = c.lastrowid
-        if ftype == "video":
+        if ftype == "audio":
+            aud_row = c.execute("SELECT id FROM categories WHERE LOWER(TRIM(name))='aud' LIMIT 1").fetchone()
+            if aud_row:
+                c.execute("INSERT OR IGNORE INTO file_category(file_id, category_id) VALUES (?,?)",(file_id,aud_row["id"]))
+        elif ftype == "video":
             generate_thumbnail(file_path, file_id, 10)
     conn.commit()
     conn.close()
@@ -382,51 +477,52 @@ def file_page(file_id):
     c = conn.cursor()
     file = c.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
     if not file:
-        conn.close()
-        abort(404)
-
+        conn.close(); abort(404)
     if is_private_file(file_id) and not is_admin():
-        conn.close()
-        abort(404)
-
+        conn.close(); abort(404)
     if request.method == "POST" and not is_admin():
-        conn.close()
-        return redirect(url_for("login", next=request.full_path))
-
+        conn.close(); return redirect(url_for("login", next=request.full_path))
     if request.method == "POST":
         title = request.form.get("title", "").strip()
         description = request.form.get("description", "")
         thumb_time = request.form.get("thumb_time")
-        selected_categories = request.form.getlist("categories")
-        c.execute("UPDATE files SET title=?, description=? WHERE id=?", (title, description, file_id))
+        artist = request.form.get("artist", "").strip()
+        album = request.form.get("album", "").strip()
+        track_raw = request.form.get("track_number", "").strip()
+        aud_tag = request.form.get("aud_tag") == "1"
+        try:
+            track_number = int(track_raw) if track_raw else None
+            if track_number is not None and track_number < 1: raise ValueError
+        except ValueError:
+            conn.close(); return jsonify({"status":"error","message":"Некорректный номер трека"}),400
+        c.execute(
+            "UPDATE files SET title=?, description=?, artist=?, album=?, track_number=? WHERE id=?",
+            (title, description,
+             artist if file["file_type"] == "audio" else "",
+             album if file["file_type"] == "audio" else "",
+             track_number if file["file_type"] == "audio" else None, file_id),
+        )
         c.execute("DELETE FROM file_category WHERE file_id=?", (file_id,))
-        for cat in selected_categories:
-            try:
-                c.execute("INSERT OR IGNORE INTO file_category(file_id, category_id) VALUES (?, ?)", (file_id, int(cat)))
-            except (TypeError, ValueError):
-                pass
-        if thumb_time and thumb_time.strip():
-            row = c.execute("SELECT filename, file_type FROM files WHERE id=?", (file_id,)).fetchone()
-            if row and row["file_type"] == "video":
-                try:
-                    generate_thumbnail(UPLOAD_FOLDER / row["filename"], file_id, max(0.0, float(thumb_time)))
-                except (ValueError, TypeError):
-                    pass
-        conn.commit()
-        conn.close()
+        category_ids=[]
+        for cat in request.form.getlist("categories"):
+            try: category_ids.append(int(cat))
+            except (TypeError,ValueError): pass
+        if file["file_type"] == "audio" and aud_tag:
+            aud_row=c.execute("SELECT id FROM categories WHERE LOWER(TRIM(name))='aud' LIMIT 1").fetchone()
+            if aud_row: category_ids.append(aud_row["id"])
+        for cat_id in dict.fromkeys(category_ids):
+            c.execute("INSERT OR IGNORE INTO file_category(file_id, category_id) VALUES (?,?)",(file_id,cat_id))
+        if thumb_time and thumb_time.strip() and file["file_type"] == "video":
+            try: generate_thumbnail(UPLOAD_FOLDER / file["filename"], file_id, max(0.0,float(thumb_time)))
+            except (ValueError,TypeError): pass
+        conn.commit(); conn.close()
         return redirect(url_for("file_page", file_id=file_id))
-
     c.execute("UPDATE files SET views = views + 1 WHERE id=?", (file_id,))
     conn.commit()
-    if is_admin():
-        categories = c.execute("SELECT * FROM categories ORDER BY name ASC").fetchall()
-    else:
-        categories = c.execute(
-            "SELECT * FROM categories WHERE LOWER(TRIM(name)) <> 'privat' ORDER BY name ASC"
-        ).fetchall()
-    file_cats = [row["category_id"] for row in c.execute("SELECT category_id FROM file_category WHERE file_id=?", (file_id,)).fetchall()]
+    categories = c.execute("SELECT * FROM categories ORDER BY name ASC").fetchall()
+    file_cats=[row["category_id"] for row in c.execute("SELECT category_id FROM file_category WHERE file_id=?",(file_id,)).fetchall()]
     conn.close()
-    return render_template("file.html", file=file, categories=categories, file_cats=file_cats)
+    return render_template("file.html", file=file, categories=categories, file_cats=file_cats, file_is_aud=is_aud_file(file_id))
 
 @app.route("/upload")
 @admin_required
@@ -489,6 +585,10 @@ def finalize_upload():
                 c.execute("INSERT OR IGNORE INTO file_category(file_id, category_id) VALUES (?, ?)", (file_id, int(cat)))
             except (TypeError, ValueError):
                 pass
+        if ftype == "audio":
+            aud_row = c.execute("SELECT id FROM categories WHERE LOWER(TRIM(name))='aud' LIMIT 1").fetchone()
+            if aud_row:
+                c.execute("INSERT OR IGNORE INTO file_category(file_id, category_id) VALUES (?,?)",(file_id,aud_row["id"]))
         conn.commit()
     except sqlite3.IntegrityError:
         conn.rollback()
