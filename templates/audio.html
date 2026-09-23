@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% block title %}Аудио · LocalTube{% endblock %}
+{% block content %}
+<section class="audio-hero">
+  <div class="audio-hero__cover" id="audioHeroCover"><span>♪</span></div>
+  <div class="audio-hero__copy">
+    <p class="eyebrow">Музыкальная библиотека</p>
+    <h1>Аудио</h1>
+    <p>Здесь собраны только файлы с тегом <code>aud</code>. Приватные треки по-прежнему видны только администратору.</p>
+    <div class="chips"><span class="chip">{{ tracks|length }} трек(ов)</span><span class="chip chip--muted">LocalTube Music</span></div>
+  </div>
+</section>
+
+<section class="audio-player panel">
+  <div class="audio-player__main">
+    <div class="audio-player__cover" id="playerCover"><span>♪</span></div>
+    <div class="audio-player__info">
+      <p class="eyebrow">Сейчас играет</p>
+      <h2 id="playerTitle">Выберите трек</h2>
+      <p id="playerArtist" class="muted">—</p>
+      <p id="playerAlbum" class="muted">—</p>
+    </div>
+    <div class="audio-player__controls">
+      <button class="icon-button" id="prevTrack" type="button" aria-label="Предыдущий">⏮</button>
+      <button class="play-button" id="playPause" type="button" aria-label="Воспроизвести">▶</button>
+      <button class="icon-button" id="nextTrack" type="button" aria-label="Следующий">⏭</button>
+    </div>
+  </div>
+  <div class="audio-player__timeline">
+    <span id="currentTime">0:00</span>
+    <input id="seekBar" type="range" min="0" max="1000" value="0">
+    <span id="duration">0:00</span>
+  </div>
+  <div class="audio-player__bottom">
+    <div class="volume-control"><span>🔊</span><input id="volumeBar" type="range" min="0" max="1" step="0.01" value="1"></div>
+    <a id="downloadCurrent" class="button button--ghost is-hidden" href="#">Скачать</a>
+  </div>
+  <audio id="audioElement" preload="metadata"></audio>
+</section>
+
+<section class="panel audio-library">
+  <div class="section-heading">
+    <div><h2>Треки</h2><p>Используйте поиск по названию, исполнителю или альбому.</p></div>
+    <form class="audio-search" method="GET">
+      <input type="search" name="q" value="{{ search }}" placeholder="Поиск по медиатеке">
+      <button class="button button--ghost" type="submit">Найти</button>
+      {% if search %}<a class="button button--ghost" href="{{ url_for('audio_page') }}">Сбросить</a>{% endif %}
+    </form>
+  </div>
+
+  {% if tracks %}
+  <div class="audio-tracklist" id="audioTrackList">
+    {% for track in tracks %}
+    <article class="audio-track" data-index="{{ loop.index0 }}" data-src="{{ url_for('uploaded_file', filename=track.filename) }}" data-title="{{ track.title }}" data-artist="{{ track.artist or 'Неизвестный исполнитель' }}" data-album="{{ track.album or 'Без альбома' }}" data-duration="{{ track.length or 0 }}" data-download="{{ url_for('download_file', filename=track.filename) }}">
+      <button class="audio-track__play" type="button" aria-label="Воспроизвести {{ track.title }}">▶</button>
+      <div class="audio-track__cover"><span>{{ (track.title[:1] or '♪')|upper }}</span></div>
+      <div class="audio-track__main">
+        <strong>{{ track.title }}</strong>
+        <span>{{ track.artist or 'Неизвестный исполнитель' }}</span>
+      </div>
+      <div class="audio-track__album">{{ track.album or 'Без альбома' }}</div>
+      <div class="audio-track__number">{% if track.track_number %}{{ track.track_number }}{% else %}—{% endif %}</div>
+      <div class="audio-track__duration">{% if track.length %}{{ (track.length // 60)|int }}:{{ '%02d'|format((track.length % 60)|int) }}{% else %}—{% endif %}</div>
+      <a class="icon-button icon-button--small" href="{{ url_for('download_file', filename=track.filename) }}" aria-label="Скачать {{ track.title }}">↓</a>
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state empty-state--compact"><div class="empty-state__icon">🎵</div><h3>Треки не найдены</h3><p>{% if search %}Измените запрос поиска.{% else %}Загрузите аудиофайл с включённым тегом aud.{% endif %}</p></div>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(() => {
+  const audio = document.getElementById('audioElement');
+  const playPause = document.getElementById('playPause');
+  const prev = document.getElementById('prevTrack');
+  const next = document.getElementById('nextTrack');
+  const seek = document.getElementById('seekBar');
+  const volume = document.getElementById('volumeBar');
+  const currentTime = document.getElementById('currentTime');
+  const duration = document.getElementById('duration');
+  const title = document.getElementById('playerTitle');
+  const artist = document.getElementById('playerArtist');
+  const album = document.getElementById('playerAlbum');
+  const download = document.getElementById('downloadCurrent');
+  const rows = Array.from(document.querySelectorAll('.audio-track'));
+
+  let currentIndex = -1;
+
+  const formatTime = (value) => {
+    const seconds = Math.max(0, Math.floor(Number(value) || 0));
+    return Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0');
+  };
+
+  const markActive = () => {
+    rows.forEach((row, i) => row.classList.toggle('is-active', i === currentIndex));
+  };
+
+  const setTrack = (index, autoplay = true) => {
+    if (!rows.length) return;
+    currentIndex = (index + rows.length) % rows.length;
+    const row = rows[currentIndex];
+    audio.src = row.dataset.src;
+    title.textContent = row.dataset.title;
+    artist.textContent = row.dataset.artist;
+    album.textContent = row.dataset.album;
+    download.href = row.dataset.download;
+    download.classList.remove('is-hidden');
+    seek.value = 0;
+    currentTime.textContent = '0:00';
+    duration.textContent = formatTime(row.dataset.duration);
+    markActive();
+    if (autoplay) {
+      audio.play().catch(() => {});
+    }
+  };
+
+  rows.forEach((row, index) => {
+    row.querySelector('.audio-track__play').addEventListener('click', () => {
+      if (currentIndex === index && !audio.paused) audio.pause();
+      else setTrack(index, true);
+    });
+  });
+
+  playPause.addEventListener('click', () => {
+    if (currentIndex < 0) return setTrack(0, true);
+    if (audio.paused) audio.play().catch(() => {});
+    else audio.pause();
+  });
+
+  prev.addEventListener('click', () => setTrack(currentIndex <= 0 ? rows.length - 1 : currentIndex - 1, true));
+  next.addEventListener('click', () => setTrack(currentIndex + 1, true));
+
+  audio.addEventListener('play', () => { playPause.textContent = '⏸'; });
+  audio.addEventListener('pause', () => { playPause.textContent = '▶'; });
+  audio.addEventListener('timeupdate', () => {
+    currentTime.textContent = formatTime(audio.currentTime);
+    if (audio.duration) seek.value = String(Math.round((audio.currentTime / audio.duration) * 1000));
+  });
+  audio.addEventListener('loadedmetadata', () => {
+    duration.textContent = formatTime(audio.duration);
+  });
+  audio.addEventListener('ended', () => setTrack(currentIndex + 1, true));
+
+  seek.addEventListener('input', () => {
+    if (audio.duration) audio.currentTime = (Number(seek.value) / 1000) * audio.duration;
+  });
+
+  volume.addEventListener('input', () => { audio.volume = Number(volume.value); });
+})();
+</script>
+{% endblock %}
