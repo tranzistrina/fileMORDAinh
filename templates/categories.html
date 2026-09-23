@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Категории · LocalTube{% endblock %}
+{% block content %}
+<section class="page-header"><div><p class="eyebrow">Организация библиотеки</p><h1>Категории</h1><p class="hero__text">Создавайте тематические группы для удобной сортировки файлов.</p></div></section>
+<div class="detail-layout detail-layout--upload">
+<section class="panel"><h2>Новая категория</h2>
+<form method="POST" class="form-grid"><div class="field field--full"><label for="name">Название</label><input type="text" id="name" name="name" placeholder="Например: Музыка" required></div><div class="field field--full"><button class="button" type="submit">Создать категорию</button></div></form>
+</section>
+<section class="panel"><div class="section-heading"><h2>Список категорий</h2><p>{{ categories|length }} шт.</p></div>
+{% if categories %}<div class="table-wrap"><table class="data-table"><thead><tr><th>ID</th><th>Название</th></tr></thead><tbody>{% for cat in categories %}<tr><td>#{{ cat.id }}</td><td>{{ cat.name }}</td></tr>{% endfor %}</tbody></table></div>
+{% else %}<div class="empty-state empty-state--compact"><div class="empty-state__icon">🏷️</div><h3>Категорий пока нет</h3><p>Создайте первую категорию, чтобы начать группировать файлы.</p></div>{% endif %}
+</section></div>
+{% endblock %}
