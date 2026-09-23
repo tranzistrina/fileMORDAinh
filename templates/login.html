@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Вход · LocalTube{% endblock %}
+{% block content %}
+<section class="auth-shell">
+  <div class="auth-card panel">
+    <p class="eyebrow">Администратор</p>
+    <h1>Вход в панель управления</h1>
+    <p class="hero__text">Гости могут просматривать и скачивать файлы. Пароль нужен только для изменений.</p>
+    {% if error %}<div class="auth-error">{{ error }}</div>{% endif %}
+    <form method="POST" class="form-grid">
+      <input type="hidden" name="next" value="{{ next_url }}">
+      <div class="field field--full"><label for="password">Пароль</label><input id="password" name="password" type="password" autocomplete="current-password" required></div>
+      <div class="field field--full"><button class="button" type="submit">Войти</button></div>
+    </form>
+  </div>
+</section>
+{% endblock %}
