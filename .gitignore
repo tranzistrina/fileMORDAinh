@@ -6,6 +6,9 @@ env/
 .env
 
 database.db
+.setup_code
+.session_secret
+
 uploads/*
 !uploads/.gitkeep
 temp_chunks/*
