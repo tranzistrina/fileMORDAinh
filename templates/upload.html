@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Загрузка · LocalTube{% endblock %}
+{% block content %}
+<section class="page-header"><div><p class="eyebrow">Добавление файла</p><h1>Загрузка в медиатеку</h1><p class="hero__text">Большие файлы загружаются пошагово по частям.</p></div></section>
+<div class="detail-layout detail-layout--upload"><section class="panel"><h2>1. Выберите файл</h2><div class="upload-dropzone"><input type="file" id="fileInput"><p>Перетащите файл сюда или выберите его вручную</p><small>Видео, аудио и любые другие файлы</small></div><div id="previewContainer" class="preview-box is-hidden"><video id="previewVideo" class="media-player is-hidden" controls></video><audio id="previewAudio" controls class="is-hidden"></audio><div id="previewOther" class="media-fallback media-fallback--wide is-hidden">📄 Предпросмотр недоступен</div></div><div class="upload-progress"><div class="upload-progress__bar"><span id="progressBar"></span></div><div class="upload-progress__text" id="progressText">Ожидание загрузки</div></div></section>
+<section class="panel"><h2>2. Заполните описание</h2><div class="form-grid"><div class="field field--full"><label for="title">Название</label><input type="text" id="title" placeholder="Имя файла или понятный заголовок"></div><div class="field field--full"><label for="description">Описание</label><textarea id="description" rows="5" placeholder="Кратко опишите содержимое файла"></textarea></div><div class="field field--full"><label for="thumb_time">Кадр для превью (сек, только для видео)</label><input type="number" id="thumb_time" value="10" min="0" step="0.1"></div><div class="field field--full"><label>Категории</label><div class="category-list category-list--compact">{% for cat in categories %}<label class="category-item"><input type="checkbox" class="upload-category" value="{{ cat.id }}"><span>{{ cat.name }}</span></label>{% endfor %}</div></div><div class="field field--full"><div class="card-actions"><button class="button" type="button" id="uploadButton">Начать загрузку</button><a class="button button--ghost" href="{{ url_for('index') }}">Отмена</a></div></div></div></section></div>
+{% endblock %}
+{% block scripts %}<script>
+const CHUNK_SIZE = 2 * 1024 * 1024;
+const fileInput = document.getElementById('fileInput');
+const previewVideo = document.getElementById('previewVideo');
+const previewAudio = document.getElementById('previewAudio');
+const previewOther = document.getElementById('previewOther');
+const previewContainer = document.getElementById('previewContainer');
+const progressBar = document.getElementById('progressBar');
+const progressText = document.getElementById('progressText');
+const uploadButton = document.getElementById('uploadButton');
+
+function setProgress(percent, text) { progressBar.style.width = percent + '%'; progressText.textContent = text; }
+
+fileInput.addEventListener('change', (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    document.getElementById('title').value ||= file.name;
+    previewContainer.classList.remove('is-hidden');
+    [previewVideo, previewAudio, previewOther].forEach((el) => el.classList.add('is-hidden'));
+    const major = (file.type || '').split('/')[0];
+    if (major === 'video') { previewVideo.src = URL.createObjectURL(file); previewVideo.classList.remove('is-hidden'); }
+    else if (major === 'audio') { previewAudio.src = URL.createObjectURL(file); previewAudio.classList.remove('is-hidden'); }
+    else previewOther.classList.remove('is-hidden');
+    setProgress(0, 'Выбран файл: ' + file.name);
+});
+
+async function uploadFile() {
+    const file = fileInput.files[0];
+    if (!file) return alert('Сначала выберите файл');
+    uploadButton.disabled = true;
+    try {
+        const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
+        const filename = file.name;
+        for (let currentChunk = 0; currentChunk < totalChunks; currentChunk++) {
+            const blob = file.slice(currentChunk * CHUNK_SIZE, Math.min((currentChunk + 1) * CHUNK_SIZE, file.size));
+            const formData = new FormData();
+            formData.append('file', blob); formData.append('filename', filename); formData.append('chunk', currentChunk); formData.append('total', totalChunks);
+            const response = await fetch('{{ url_for("upload_chunk") }}', {method:'POST', body:formData});
+            if (!response.ok) throw new Error('Ошибка загрузки чанка ' + (currentChunk + 1));
+            const percent = Math.round(((currentChunk + 1) / totalChunks) * 100);
+            setProgress(percent, 'Загрузка: ' + percent + '%');
+        }
+        const finalizeData = new FormData();
+        finalizeData.append('filename', filename);
+        finalizeData.append('title', document.getElementById('title').value || filename);
+        finalizeData.append('description', document.getElementById('description').value);
+        finalizeData.append('thumb_time', document.getElementById('thumb_time').value);
+        document.querySelectorAll('.upload-category:checked').forEach((checkbox) => finalizeData.append('categories', checkbox.value));
+        setProgress(100, 'Сохранение метаданных...');
+        const response = await fetch('{{ url_for("finalize_upload") }}', {method:'POST', body:finalizeData});
+        if (!response.ok) throw new Error('Не удалось сохранить файл');
+        window.location.href = '{{ url_for("index") }}';
+    } catch (error) {
+        setProgress(0, error.message);
+        uploadButton.disabled = false;
+        alert(error.message);
+    }
+}
+uploadButton.addEventListener('click', uploadFile);
+</script>{% endblock %}
