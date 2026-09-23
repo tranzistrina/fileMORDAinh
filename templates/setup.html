@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Первичная настройка · LocalTube{% endblock %}
+{% block content %}
+<section class="auth-shell">
+  <div class="auth-card panel">
+    <p class="eyebrow">Первый запуск</p>
+    <h1>Создайте пароль администратора</h1>
+    <p class="hero__text">Для защиты от случайных пользователей первичная настройка требует одноразовый код, который сервер печатает в терминал при первом запуске.</p>
+    {% if error %}<div class="auth-error">{{ error }}</div>{% endif %}
+    <form method="POST" class="form-grid">
+      <div class="field field--full"><label for="setup_code">Код первичной настройки</label><input id="setup_code" name="setup_code" autocomplete="off" required></div>
+      <div class="field field--full"><label for="password">Новый пароль</label><input id="password" name="password" type="password" minlength="8" autocomplete="new-password" required></div>
+      <div class="field field--full"><label for="password2">Повторите пароль</label><input id="password2" name="password2" type="password" minlength="8" autocomplete="new-password" required></div>
+      <div class="field field--full"><button class="button" type="submit">Создать администратора</button></div>
+    </form>
+  </div>
+</section>
+{% endblock %}
