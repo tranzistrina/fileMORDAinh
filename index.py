@@ -1,10 +1,25 @@
+import hmac
 import os
+import secrets
 import sqlite3
 from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
 
 import cv2
-from flask import Flask, abort, jsonify, redirect, render_template, request, send_from_directory, url_for
+from flask import (
+    Flask,
+    abort,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_from_directory,
+    session,
+    url_for,
+)
+from waitress import serve
+from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -12,11 +27,29 @@ UPLOAD_FOLDER = BASE_DIR / "uploads"
 THUMB_FOLDER = BASE_DIR / "thumbnails"
 TEMP_FOLDER = BASE_DIR / "temp_chunks"
 DB = BASE_DIR / "database.db"
+SETUP_CODE_FILE = BASE_DIR / ".setup_code"
+SESSION_SECRET_FILE = BASE_DIR / ".session_secret"
 
 for folder in (UPLOAD_FOLDER, THUMB_FOLDER, TEMP_FOLDER):
     folder.mkdir(parents=True, exist_ok=True)
 
+def get_or_create_secret():
+    env_secret = os.environ.get("SESSION_SECRET")
+    if env_secret:
+        return env_secret
+    if SESSION_SECRET_FILE.exists():
+        return SESSION_SECRET_FILE.read_text(encoding="utf-8").strip()
+    secret = secrets.token_hex(32)
+    SESSION_SECRET_FILE.write_text(secret, encoding="utf-8")
+    return secret
+
 app = Flask(__name__)
+app.secret_key = get_or_create_secret()
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=os.environ.get("COOKIE_SECURE", "0") == "1",
+)
 
 def get_db():
     conn = sqlite3.connect(DB)
@@ -46,9 +79,76 @@ def init_db():
             category_id INTEGER NOT NULL,
             UNIQUE(file_id, category_id)
         )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )""")
         conn.commit()
 
 init_db()
+
+def get_setting(key):
+    with sqlite3.connect(DB) as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else None
+
+def set_setting(key, value):
+    with sqlite3.connect(DB) as conn:
+        conn.execute(
+            "INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
+        conn.commit()
+
+def admin_configured():
+    return bool(get_setting("admin_password_hash"))
+
+def get_setup_code():
+    env_code = os.environ.get("ADMIN_SETUP_CODE")
+    if env_code:
+        return env_code
+    if not SETUP_CODE_FILE.exists():
+        code = secrets.token_urlsafe(18)
+        SETUP_CODE_FILE.write_text(code, encoding="utf-8")
+        try:
+            SETUP_CODE_FILE.chmod(0o600)
+        except OSError:
+            pass
+        print(f"\n[SECURITY] First-run setup code: {code}\n")
+    return SETUP_CODE_FILE.read_text(encoding="utf-8").strip()
+
+def consume_setup_code():
+    if not os.environ.get("ADMIN_SETUP_CODE") and SETUP_CODE_FILE.exists():
+        try:
+            SETUP_CODE_FILE.unlink()
+        except OSError:
+            pass
+
+def is_admin():
+    return bool(session.get("is_admin"))
+
+def admin_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not admin_configured():
+            return redirect(url_for("setup"))
+        if not is_admin():
+            return redirect(url_for("login", next=request.full_path))
+        return view(*args, **kwargs)
+    return wrapped
+
+@app.before_request
+def first_run_guard():
+    if admin_configured():
+        return None
+    allowed = {"setup", "static"}
+    if request.endpoint in allowed:
+        return None
+    return redirect(url_for("setup"))
+
+@app.context_processor
+def auth_context():
+    return {"logged_in": is_admin(), "admin_configured": admin_configured()}
 
 def utc_now_iso():
     return datetime.now(timezone.utc).isoformat()
@@ -87,6 +187,52 @@ def safe_upload_name(filename):
 def temp_chunk_path(filename, chunk_number):
     return TEMP_FOLDER / f"{filename}.part{chunk_number}"
 
+@app.route("/setup", methods=["GET", "POST"])
+def setup():
+    if admin_configured():
+        return redirect(url_for("index"))
+    error = None
+    if request.method == "POST":
+        code = request.form.get("setup_code", "")
+        password = request.form.get("password", "")
+        password2 = request.form.get("password2", "")
+        valid_code = hmac.compare_digest(code, get_setup_code())
+        if not valid_code:
+            error = "Неверный код первичной настройки."
+        elif len(password) < 8:
+            error = "Пароль должен содержать минимум 8 символов."
+        elif password != password2:
+            error = "Пароли не совпадают."
+        else:
+            set_setting("admin_password_hash", generate_password_hash(password))
+            consume_setup_code()
+            session.clear()
+            session["is_admin"] = True
+            return redirect(url_for("index"))
+    return render_template("setup.html", error=error)
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if not admin_configured():
+        return redirect(url_for("setup"))
+    if is_admin():
+        return redirect(url_for("index"))
+    error = None
+    next_url = request.args.get("next") or request.form.get("next") or url_for("index")
+    if request.method == "POST":
+        password = request.form.get("password", "")
+        password_hash = get_setting("admin_password_hash")
+        if password_hash and check_password_hash(password_hash, password):
+            session["is_admin"] = True
+            return redirect(next_url if next_url.startswith("/") else url_for("index"))
+        error = "Неверный пароль."
+    return render_template("login.html", error=error, next_url=next_url)
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("index"))
+
 @app.route("/")
 def index():
     sort = request.args.get("sort", "date")
@@ -115,6 +261,7 @@ def index():
     return render_template("index.html", files=files, categories=categories, file_categories=file_categories)
 
 @app.route("/add_category", methods=["POST"])
+@admin_required
 def add_category():
     name = request.form.get("name", "").strip()
     if not name:
@@ -134,6 +281,8 @@ def add_category():
 
 @app.route("/categories", methods=["GET", "POST"])
 def categories_page():
+    if request.method == "POST" and not is_admin():
+        return redirect(url_for("login", next=request.full_path))
     conn = get_db()
     c = conn.cursor()
     if request.method == "POST":
@@ -149,6 +298,7 @@ def categories_page():
     return render_template("categories.html", categories=categories)
 
 @app.route("/scan_files")
+@admin_required
 def scan_files():
     conn = get_db()
     c = conn.cursor()
@@ -171,6 +321,9 @@ def scan_files():
 
 @app.route("/file/<int:file_id>", methods=["GET", "POST"])
 def file_page(file_id):
+    if request.method == "POST" and not is_admin():
+        return redirect(url_for("login", next=request.full_path))
+
     conn = get_db()
     c = conn.cursor()
     if request.method == "POST":
@@ -190,7 +343,7 @@ def file_page(file_id):
             if row and row["file_type"] == "video":
                 try:
                     generate_thumbnail(UPLOAD_FOLDER / row["filename"], file_id, max(0.0, float(thumb_time)))
-                except ValueError:
+                except (ValueError, TypeError):
                     pass
         conn.commit()
         conn.close()
@@ -208,6 +361,7 @@ def file_page(file_id):
     return render_template("file.html", file=file, categories=categories, file_cats=file_cats)
 
 @app.route("/upload")
+@admin_required
 def upload_page():
     conn = get_db()
     categories = conn.execute("SELECT * FROM categories ORDER BY name ASC").fetchall()
@@ -215,6 +369,7 @@ def upload_page():
     return render_template("upload.html", categories=categories)
 
 @app.route("/upload_chunk", methods=["POST"])
+@admin_required
 def upload_chunk():
     file = request.files.get("file")
     original_filename = request.form.get("filename", "")
@@ -242,6 +397,7 @@ def upload_chunk():
     return jsonify({"status": "ok", "filename": filename})
 
 @app.route("/finalize_upload", methods=["POST"])
+@admin_required
 def finalize_upload():
     filename = safe_upload_name(request.form.get("filename", ""))
     title = request.form.get("title", "").strip() or filename
@@ -274,7 +430,7 @@ def finalize_upload():
     if ftype == "video" and thumb_time:
         try:
             generate_thumbnail(path, file_id, max(0.0, float(thumb_time)))
-        except ValueError:
+        except (ValueError, TypeError):
             pass
     return redirect(url_for("index"))
 
@@ -291,6 +447,6 @@ def thumb_file(filename):
     return send_from_directory(THUMB_FOLDER, filename)
 
 if __name__ == "__main__":
+    host = os.environ.get("HOST", "0.0.0.0")
     port = int(os.environ.get("PORT", "1313"))
-    debug = os.environ.get("FLASK_DEBUG", "0") == "1"
-    app.run(host="127.0.0.1", port=port, debug=debug)
+    serve(app, host=host, port=port, threads=int(os.environ.get("WAITRESS_THREADS", "8")))
