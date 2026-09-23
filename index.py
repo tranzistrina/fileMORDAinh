@@ -124,6 +124,9 @@ def consume_setup_code():
         except OSError:
             pass
 
+if not admin_configured():
+    get_setup_code()
+
 def is_admin():
     return bool(session.get("is_admin"))
 
@@ -224,7 +227,8 @@ def login():
         password_hash = get_setting("admin_password_hash")
         if password_hash and check_password_hash(password_hash, password):
             session["is_admin"] = True
-            return redirect(next_url if next_url.startswith("/") else url_for("index"))
+            safe_next = next_url if next_url.startswith("/") and not next_url.startswith("//") else url_for("index")
+            return redirect(safe_next)
         error = "Неверный пароль."
     return render_template("login.html", error=error, next_url=next_url)
 
