@@ -282,7 +282,7 @@ def index():
                    WHERE fc.category_id = ?"""
         params = [category]
     else:
-        query, params = "SELECT * FROM files", []
+        query, params = "SELECT * FROM files WHERE 1=1", []
 
     if not is_admin():
         query += """ AND NOT EXISTS (
@@ -345,7 +345,12 @@ def categories_page():
                 conn.commit()
             except sqlite3.IntegrityError:
                 pass
-    categories = c.execute("SELECT * FROM categories ORDER BY name ASC").fetchall()
+    if is_admin():
+        categories = c.execute("SELECT * FROM categories ORDER BY name ASC").fetchall()
+    else:
+        categories = c.execute(
+            "SELECT * FROM categories WHERE LOWER(TRIM(name)) <> 'privat' ORDER BY name ASC"
+        ).fetchall()
     conn.close()
     return render_template("categories.html", categories=categories)
 
