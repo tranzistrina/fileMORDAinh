@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}LocalTube{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <div class="app-shell">
+        <header class="topbar">
+            <a class="brand" href="{{ url_for('index') }}">
+                <span class="brand__logo">▶</span>
+                <div><strong>LocalTube</strong><small>Локальная медиатека</small></div>
+            </a>
+            <nav class="topbar__nav">
+                <a class="nav-link" href="{{ url_for('index') }}">Главная</a>
+                <a class="nav-link" href="{{ url_for('upload_page') }}">Загрузка</a>
+                <a class="nav-link" href="{{ url_for('categories_page') }}">Категории</a>
+                <a class="button button--ghost" href="{{ url_for('scan_files') }}">Сканировать папку</a>
+            </nav>
+        </header>
+        <main class="page">
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>
