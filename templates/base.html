@@ -19,9 +19,14 @@
             </a>
             <nav class="topbar__nav">
                 <a class="nav-link" href="{{ url_for('index') }}">Главная</a>
-                <a class="nav-link" href="{{ url_for('upload_page') }}">Загрузка</a>
                 <a class="nav-link" href="{{ url_for('categories_page') }}">Категории</a>
-                <a class="button button--ghost" href="{{ url_for('scan_files') }}">Сканировать папку</a>
+                {% if logged_in %}
+                    <a class="nav-link" href="{{ url_for('upload_page') }}">Загрузка</a>
+                    <a class="button button--ghost" href="{{ url_for('scan_files') }}">Сканировать папку</a>
+                    <a class="button button--ghost" href="{{ url_for('logout') }}">Выйти</a>
+                {% else %}
+                    <a class="button button--ghost" href="{{ url_for('login') }}">Вход администратора</a>
+                {% endif %}
             </nav>
         </header>
         <main class="page">
