@@ -282,7 +282,7 @@ def index():
                    WHERE fc.category_id = ?"""
         params = [category]
     else:
-        query, params = "SELECT * FROM files WHERE 1=1", []
+        query, params = "SELECT * FROM files f WHERE 1=1", []
 
     if not is_admin():
         query += """ AND NOT EXISTS (
