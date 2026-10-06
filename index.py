@@ -433,6 +433,14 @@ def index():
     else:
         query, params = "SELECT * FROM files f WHERE 1=1", []
 
+    query += """ AND NOT EXISTS (
+        SELECT 1
+        FROM file_category porno_fc
+        JOIN categories porno_c ON porno_c.id = porno_fc.category_id
+        WHERE porno_fc.file_id = f.id
+          AND LOWER(TRIM(porno_c.name)) = 'porno'
+    )"""
+
     if not is_admin():
         query += """ AND NOT EXISTS (
             SELECT 1
@@ -469,9 +477,7 @@ def index():
 
     files = c.execute(query, tuple(params)).fetchall()
     categories = c.execute(
-        "SELECT * FROM categories ORDER BY name ASC"
-    ).fetchall() if is_admin() else c.execute(
-        "SELECT * FROM categories WHERE LOWER(TRIM(name)) NOT IN ('privat', 'aud') ORDER BY name ASC"
+        "SELECT * FROM categories WHERE LOWER(TRIM(name)) NOT IN ('privat', 'aud', 'porno') ORDER BY name ASC"
     ).fetchall()
     file_categories = c.execute("SELECT * FROM file_category").fetchall()
     conn.close()
@@ -496,6 +502,13 @@ def audio_page():
                        AND LOWER(TRIM(aud_c.name)) = 'aud'
                  )"""
     params = []
+    query += """ AND NOT EXISTS (
+        SELECT 1
+        FROM file_category porno_fc
+        JOIN categories porno_c ON porno_c.id = porno_fc.category_id
+        WHERE porno_fc.file_id = f.id
+          AND LOWER(TRIM(porno_c.name)) = 'porno'
+    )"""
     if not is_admin():
         query += """ AND NOT EXISTS (
             SELECT 1 FROM file_category private_fc
@@ -555,12 +568,9 @@ def categories_page():
                 conn.commit()
             except sqlite3.IntegrityError:
                 pass
-    if is_admin():
-        categories = c.execute("SELECT * FROM categories ORDER BY name ASC").fetchall()
-    else:
-        categories = c.execute(
-            "SELECT * FROM categories WHERE LOWER(TRIM(name)) <> 'privat' ORDER BY name ASC"
-        ).fetchall()
+    categories = c.execute(
+        "SELECT * FROM categories WHERE LOWER(TRIM(name)) NOT IN ('privat', 'porno') ORDER BY name ASC"
+    ).fetchall()
     conn.close()
     return render_template("categories.html", categories=categories)
 
@@ -591,7 +601,7 @@ def scan_files():
     return redirect(url_for("index"))
 
 @app.route("/file/<int:file_id>", methods=["GET", "POST"])
-def file_page(file_id):
+def file_page(file_id, porno_mode=False):
     conn = get_db()
     c = conn.cursor()
     file = c.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
@@ -599,6 +609,9 @@ def file_page(file_id):
         conn.close(); abort(404)
     if is_private_file(file_id) and not is_admin():
         conn.close(); abort(404)
+    if is_porno_file(file_id) and not porno_mode and not request.path.startswith("/porno"):
+        conn.close()
+        return redirect(url_for("porno_file_page", file_id=file_id))
     if request.method == "POST" and not is_admin():
         conn.close(); return redirect(url_for("login", next=request.full_path))
     if request.method == "POST":
@@ -631,17 +644,43 @@ def file_page(file_id):
             if aud_row: category_ids.append(aud_row["id"])
         for cat_id in dict.fromkeys(category_ids):
             c.execute("INSERT OR IGNORE INTO file_category(file_id, category_id) VALUES (?,?)",(file_id,cat_id))
+
+        if is_porno_file(file_id):
+            c.execute("DELETE FROM file_porno_category WHERE file_id=?", (file_id,))
+            for cat in request.form.getlist("porno_categories"):
+                try:
+                    c.execute(
+                        "INSERT OR IGNORE INTO file_porno_category(file_id, category_id) VALUES (?,?)",
+                        (file_id, int(cat)),
+                    )
+                except (TypeError, ValueError):
+                    pass
+
         if thumb_time and thumb_time.strip() and file["file_type"] == "video":
             try: generate_thumbnail(UPLOAD_FOLDER / file["filename"], file_id, max(0.0,float(thumb_time)))
             except (ValueError,TypeError): pass
         conn.commit(); conn.close()
-        return redirect(url_for("file_page", file_id=file_id))
+        return redirect(url_for("porno_file_page" if porno_mode else "file_page", file_id=file_id))
     c.execute("UPDATE files SET views = views + 1 WHERE id=?", (file_id,))
     conn.commit()
     categories = c.execute("SELECT * FROM categories ORDER BY name ASC").fetchall()
     file_cats=[row["category_id"] for row in c.execute("SELECT category_id FROM file_category WHERE file_id=?",(file_id,)).fetchall()]
+    porno_categories = c.execute("SELECT * FROM porno_categories ORDER BY LOWER(name) ASC").fetchall()
+    porno_file_cats = get_porno_category_ids(file_id)
+    recommendations = get_porno_recommendations(file_id) if is_porno_file(file_id) else []
     conn.close()
-    return render_template("file.html", file=file, categories=categories, file_cats=file_cats, file_is_aud=is_aud_file(file_id))
+    template = "porno_file.html" if is_porno_file(file_id) else "file.html"
+    return render_template(
+        template,
+        porno_mode=porno_mode,
+        file=file,
+        categories=categories,
+        file_cats=file_cats,
+        file_is_aud=is_aud_file(file_id),
+        porno_categories=porno_categories,
+        porno_file_cats=porno_file_cats,
+        recommendations=recommendations,
+    )
 
 @app.route("/upload")
 @admin_required
