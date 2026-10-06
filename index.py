@@ -259,16 +259,22 @@ def get_porno_recommendations(file_id, limit=8):
     conn = get_db()
     try:
         base_ids = get_porno_category_ids(file_id)
-        query = """SELECT f.*,
-                          COUNT(DISTINCT matched_pc.category_id) AS category_overlap
-                   FROM files f
-                   JOIN file_category porno_fc ON porno_fc.file_id = f.id
-                   JOIN categories porno_c ON porno_c.id = porno_fc.category_id
-                   LEFT JOIN file_porno_category matched_pc ON matched_pc.file_id = f.id
-                   WHERE f.id <> ?
-                     AND f.file_type IN ('image', 'video')
-                     AND LOWER(TRIM(porno_c.name)) = 'porno'"""
         params = [file_id]
+        if base_ids:
+            placeholders = ",".join("?" for _ in base_ids)
+            overlap_expr = f"COUNT(DISTINCT CASE WHEN matched_pc.category_id IN ({placeholders}) THEN matched_pc.category_id END)"
+        else:
+            overlap_expr = "0"
+
+        query = f"""SELECT f.*,
+                           {overlap_expr} AS category_overlap
+                    FROM files f
+                    JOIN file_category porno_fc ON porno_fc.file_id = f.id
+                    JOIN categories porno_c ON porno_c.id = porno_fc.category_id
+                    LEFT JOIN file_porno_category matched_pc ON matched_pc.file_id = f.id
+                    WHERE f.id <> ?
+                      AND f.file_type IN ('image', 'video')
+                      AND LOWER(TRIM(porno_c.name)) = 'porno'"""
         if not is_admin():
             query += """ AND NOT EXISTS (
                 SELECT 1 FROM file_category private_fc
@@ -277,19 +283,20 @@ def get_porno_recommendations(file_id, limit=8):
                   AND LOWER(TRIM(private_c.name)) = 'privat'
             )"""
         if base_ids:
-            placeholders = ",".join("?" for _ in base_ids)
             query += f""" AND EXISTS (
                 SELECT 1 FROM file_porno_category overlap_pc
                 WHERE overlap_pc.file_id = f.id
                   AND overlap_pc.category_id IN ({placeholders})
             )"""
             params.extend(base_ids)
+
         query += """ GROUP BY f.id
                      ORDER BY category_overlap DESC,
                               f.views DESC,
                               f.upload_date DESC
                      LIMIT ?"""
         params.append(limit)
+
         rows = list(conn.execute(query, tuple(params)).fetchall())
         if len(rows) < limit:
             existing = {row["id"] for row in rows}
