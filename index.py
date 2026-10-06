@@ -823,6 +823,17 @@ def file_page(file_id, porno_mode=False):
         recommendations=recommendations,
     )
 
+@app.route("/pac")
+@admin_required
+def batch_upload_page():
+    conn = get_db()
+    categories = conn.execute(
+        "SELECT * FROM categories WHERE LOWER(TRIM(name)) NOT IN ('aud', 'porno') ORDER BY LOWER(name) ASC"
+    ).fetchall()
+    conn.close()
+    return render_template("batch_upload.html", categories=categories)
+
+
 @app.route("/upload")
 @admin_required
 def upload_page():
@@ -869,9 +880,20 @@ def finalize_upload():
     title = request.form.get("title", "").strip() or filename
     desc = request.form.get("description", "")
     thumb_time = request.form.get("thumb_time")
+    artist = request.form.get("artist", "").strip()
+    album = request.form.get("album", "").strip()
+    track_raw = request.form.get("track_number", "").strip()
     selected_categories = request.form.getlist("categories")
     selected_porno_categories = request.form.getlist("porno_categories")
     porno_mode = request.form.get("porno_mode") == "1"
+
+    try:
+        track_number = int(track_raw) if track_raw else None
+        if track_number is not None and track_number < 1:
+            raise ValueError
+    except ValueError:
+        return jsonify({"status": "error", "message": "Некорректный номер трека"}), 400
+
     path = UPLOAD_FOLDER / filename
     if not path.is_file():
         return jsonify({"status": "error", "message": "Загруженный файл не найден"}), 400
@@ -882,9 +904,18 @@ def finalize_upload():
     conn = get_db()
     c = conn.cursor()
     try:
-        c.execute("""INSERT INTO files (filename, title, description, file_type, length, filesize, upload_date)
-                     VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                  (filename, title, desc, ftype, length, path.stat().st_size, utc_now_iso()))
+        c.execute("""INSERT INTO files (
+                         filename, title, description, file_type, length, filesize,
+                         upload_date, artist, album, track_number
+                     )
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  (
+                      filename, title, desc, ftype, length, path.stat().st_size,
+                      utc_now_iso(),
+                      artist if ftype == "audio" else "",
+                      album if ftype == "audio" else "",
+                      track_number if ftype == "audio" else None,
+                  ))
         file_id = c.lastrowid
         for cat in selected_categories:
             try:
