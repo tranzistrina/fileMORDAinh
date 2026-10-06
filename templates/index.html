@@ -74,7 +74,9 @@
         <article class="file-card {% if file.file_type == 'audio' %}file-card--audio{% endif %}">
           <a class="file-card__media" href="{{ url_for('file_page', file_id=file.id) }}">
             {% if file.file_type == 'video' %}
-              <img src="{{ url_for('thumb_file', filename=file.id ~ '.jpg') }}" alt="Превью {{ file.title }}" onerror="this.outerHTML='<div class=&quot;media-fallback&quot;>🎬</div>'">
+              <img src="{{ url_for('thumb_file', filename=file.id ~ '.jpg') }}" alt="Превью {{ file.title }}" loading="lazy" onerror="this.outerHTML='<div class=&quot;media-fallback&quot;>🎬</div>'">
+            {% elif file.file_type == 'image' %}
+              <img class="card-image" src="{{ url_for('uploaded_file', filename=file.filename) }}" alt="{{ file.title }}" loading="lazy" onerror="this.outerHTML='<div class=&quot;media-fallback&quot;>🖼️</div>'">
             {% elif file.file_type == 'audio' %}
               <div class="media-fallback media-fallback--audio">♪</div>
             {% else %}
