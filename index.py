@@ -640,12 +640,22 @@ def porno_page():
            GROUP BY pc.id
            ORDER BY LOWER(pc.name) ASC"""
     ).fetchall()
+    category_rows = conn.execute(
+        """SELECT fpc.file_id, pc.name
+           FROM file_porno_category fpc
+           JOIN porno_categories pc ON pc.id = fpc.category_id
+           ORDER BY LOWER(pc.name) ASC"""
+    ).fetchall()
+    file_porno_categories = {}
+    for row in category_rows:
+        file_porno_categories.setdefault(row["file_id"], []).append(row["name"])
     conn.close()
 
     return render_template(
         "porno.html",
         files=files,
         porno_categories=porno_categories,
+        file_porno_categories=file_porno_categories,
         selected_category=category_id,
         search=search,
         sort=sort,
