@@ -55,6 +55,8 @@ app.config.update(
 def get_db():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
     return conn
 
 def init_db():
@@ -81,7 +83,20 @@ def init_db():
         c.execute("""CREATE TABLE IF NOT EXISTS file_category (
             file_id INTEGER NOT NULL,
             category_id INTEGER NOT NULL,
-            UNIQUE(file_id, category_id)
+            UNIQUE(file_id, category_id),
+            FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE,
+            FOREIGN KEY(category_id) REFERENCES categories(id) ON DELETE CASCADE
+        )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS porno_categories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL
+        )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS file_porno_category (
+            file_id INTEGER NOT NULL,
+            category_id INTEGER NOT NULL,
+            UNIQUE(file_id, category_id),
+            FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE,
+            FOREIGN KEY(category_id) REFERENCES porno_categories(id) ON DELETE CASCADE
         )""")
         c.execute("""CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
@@ -98,6 +113,7 @@ def init_db():
             if column not in existing_columns:
                 c.execute(statement)
         c.execute("INSERT OR IGNORE INTO categories(name) VALUES ('aud')")
+        c.execute("INSERT OR IGNORE INTO categories(name) VALUES ('porno')")
         conn.commit()
 
 init_db()
@@ -173,10 +189,12 @@ def utc_now_iso():
 
 def get_file_type(filename):
     ext = Path(filename).suffix.lower().lstrip(".")
-    if ext in {"mp4", "avi", "mov", "mkv", "flv", "wmv", "webm"}:
+    if ext in {"mp4", "avi", "mov", "mkv", "flv", "wmv", "webm", "m4v"}:
         return "video"
     if ext in {"mp3", "wav", "ogg", "flac", "aac", "m4a"}:
         return "audio"
+    if ext in {"jpg", "jpeg", "png", "gif", "webp", "avif", "bmp"}:
+        return "image"
     return "other"
 
 def get_video_length(path):
