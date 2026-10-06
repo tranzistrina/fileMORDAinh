@@ -89,11 +89,9 @@
         <h3>{{ file.title }}</h3>
         <p>{{ file.description or 'Без описания' }}</p>
         <div class="chips">
-          {% if logged_in %}
-            {% for cat in porno_categories %}
-              {% if cat.id in [] %}{% endif %}
-            {% endfor %}
-          {% endif %}
+          {% for name in file_porno_categories.get(file.id, []) %}
+            <a class="chip" href="{{ url_for('porno_page', category=(porno_categories | selectattr('name', 'equalto', name) | map(attribute='id') | first)) }}">{{ name }}</a>
+          {% endfor %}
           <span class="chip chip--muted">{{ file.views }} просмотров</span>
           <span class="chip chip--muted">{{ (file.filesize / 1024 / 1024)|round(1) }} МБ</span>
         </div>
