@@ -220,6 +220,107 @@ def generate_thumbnail(path, file_id, time_sec=10):
 def safe_upload_name(filename):
     return secure_filename(filename) or "uploaded_file"
 
+def get_category_id(name):
+    normalized = name.strip().lower()
+    with sqlite3.connect(DB) as conn:
+        row = conn.execute(
+            "SELECT id FROM categories WHERE LOWER(TRIM(name)) = ? LIMIT 1",
+            (normalized,),
+        ).fetchone()
+    return row[0] if row else None
+
+
+def is_category_file(file_id, category_name):
+    category_id = get_category_id(category_name)
+    if category_id is None:
+        return False
+    with sqlite3.connect(DB) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM file_category WHERE file_id = ? AND category_id = ? LIMIT 1",
+            (file_id, category_id),
+        ).fetchone()
+    return row is not None
+
+
+def is_porno_file(file_id):
+    return is_category_file(file_id, "porno")
+
+
+def get_porno_category_ids(file_id):
+    with sqlite3.connect(DB) as conn:
+        rows = conn.execute(
+            "SELECT category_id FROM file_porno_category WHERE file_id = ?",
+            (file_id,),
+        ).fetchall()
+    return [row[0] for row in rows]
+
+
+def get_porno_recommendations(file_id, limit=8):
+    conn = get_db()
+    try:
+        base_ids = get_porno_category_ids(file_id)
+        query = """SELECT f.*,
+                          COUNT(DISTINCT matched_pc.category_id) AS category_overlap
+                   FROM files f
+                   JOIN file_category porno_fc ON porno_fc.file_id = f.id
+                   JOIN categories porno_c ON porno_c.id = porno_fc.category_id
+                   LEFT JOIN file_porno_category matched_pc ON matched_pc.file_id = f.id
+                   WHERE f.id <> ?
+                     AND f.file_type IN ('image', 'video')
+                     AND LOWER(TRIM(porno_c.name)) = 'porno'"""
+        params = [file_id]
+        if not is_admin():
+            query += """ AND NOT EXISTS (
+                SELECT 1 FROM file_category private_fc
+                JOIN categories private_c ON private_c.id = private_fc.category_id
+                WHERE private_fc.file_id = f.id
+                  AND LOWER(TRIM(private_c.name)) = 'privat'
+            )"""
+        if base_ids:
+            placeholders = ",".join("?" for _ in base_ids)
+            query += f""" AND EXISTS (
+                SELECT 1 FROM file_porno_category overlap_pc
+                WHERE overlap_pc.file_id = f.id
+                  AND overlap_pc.category_id IN ({placeholders})
+            )"""
+            params.extend(base_ids)
+        query += """ GROUP BY f.id
+                     ORDER BY category_overlap DESC,
+                              f.views DESC,
+                              f.upload_date DESC
+                     LIMIT ?"""
+        params.append(limit)
+        rows = list(conn.execute(query, tuple(params)).fetchall())
+        if len(rows) < limit:
+            existing = {row["id"] for row in rows}
+            fallback = """SELECT DISTINCT f.*
+                          FROM files f
+                          JOIN file_category porno_fc ON porno_fc.file_id = f.id
+                          JOIN categories porno_c ON porno_c.id = porno_fc.category_id
+                          WHERE f.id <> ?
+                            AND f.file_type IN ('image', 'video')
+                            AND LOWER(TRIM(porno_c.name)) = 'porno'"""
+            fallback_params = [file_id]
+            if not is_admin():
+                fallback += """ AND NOT EXISTS (
+                    SELECT 1 FROM file_category private_fc
+                    JOIN categories private_c ON private_c.id = private_fc.category_id
+                    WHERE private_fc.file_id = f.id
+                      AND LOWER(TRIM(private_c.name)) = 'privat'
+                )"""
+            fallback += " ORDER BY f.upload_date DESC LIMIT ?"
+            fallback_params.append(limit * 2)
+            for row in conn.execute(fallback, tuple(fallback_params)).fetchall():
+                if row["id"] not in existing:
+                    rows.append(row)
+                    existing.add(row["id"])
+                    if len(rows) >= limit:
+                        break
+        return rows
+    finally:
+        conn.close()
+
+
 def is_private_file(file_id):
     with sqlite3.connect(DB) as conn:
         row = conn.execute(
