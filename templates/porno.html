@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block title %}Porno · LocalTube{% endblock %}
+{% block content %}
+<section class="porno-hero">
+  <div>
+    <p class="eyebrow">Скрытая медиатека</p>
+    <h1>Porno</h1>
+    <p class="hero__text">Отдельная галерея фото и видео. Основная библиотека, навигация и обычные категории её не показывают.</p>
+  </div>
+  {% if logged_in %}
+  <div class="hero__actions">
+    <a class="button" href="{{ url_for('porno_upload_page') }}">Добавить фото или видео</a>
+  </div>
+  {% endif %}
+</section>
+
+<section class="panel panel--filters porno-filters">
+  <form method="GET" class="filters-grid">
+    <div class="field field--full">
+      <label for="q">Поиск</label>
+      <input id="q" name="q" type="search" value="{{ search }}" placeholder="Название, имя файла или описание">
+    </div>
+    <div class="field">
+      <label for="pornoCategory">Категория</label>
+      <select id="pornoCategory" name="category">
+        <option value="">Все категории</option>
+        {% for cat in porno_categories %}
+          <option value="{{ cat.id }}" {% if selected_category == cat.id %}selected{% endif %}>{{ cat.name }}{% if cat.file_count %} · {{ cat.file_count }}{% endif %}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label for="sort">Сортировка</label>
+      <select id="sort" name="sort">
+        <option value="date" {% if sort == 'date' %}selected{% endif %}>Сначала новые</option>
+        <option value="views" {% if sort == 'views' %}selected{% endif %}>По просмотрам</option>
+        <option value="title" {% if sort == 'title' %}selected{% endif %}>По названию</option>
+      </select>
+    </div>
+    <div class="field field--actions field--full">
+      <button class="button" type="submit">Применить</button>
+      <a class="button button--ghost" href="{{ url_for('porno_page') }}">Сбросить</a>
+    </div>
+  </form>
+</section>
+
+{% if logged_in %}
+<section class="panel porno-category-manager">
+  <div class="section-heading">
+    <div>
+      <h2>Категории этой страницы</h2>
+      <p>Они не попадают в обычный раздел категорий.</p>
+    </div>
+  </div>
+  <div class="chips porno-category-cloud">
+    {% for cat in porno_categories %}
+      <a class="chip {% if selected_category == cat.id %}chip--active{% endif %}" href="{{ url_for('porno_page', category=cat.id, sort=sort) }}">{{ cat.name }}{% if cat.file_count %} · {{ cat.file_count }}{% endif %}</a>
+    {% endfor %}
+  </div>
+  <div class="porno-category-add">
+    <input type="text" id="pornoCategoryName" placeholder="Новая категория">
+    <button class="button button--ghost" type="button" id="addPornoCategoryBtn">Добавить</button>
+  </div>
+</section>
+{% endif %}
+
+<section class="content-section">
+  <div class="section-heading">
+    <div>
+      <h2>Галерея</h2>
+      <p>{{ files|length }} элементов</p>
+    </div>
+  </div>
+
+  {% if files %}
+  <div class="porno-grid">
+    {% for file in files %}
+    <article class="porno-card">
+      <a class="porno-card__media" href="{{ url_for('porno_file_page', file_id=file.id) }}">
+        {% if file.file_type == 'video' %}
+          <img src="{{ url_for('thumb_file', filename=file.id ~ '.jpg') }}" alt="Превью {{ file.title }}" loading="lazy" onerror="this.outerHTML='<div class=&quot;media-fallback media-fallback--wide&quot;>▶ Видео</div>'">
+          <span class="porno-card__type">VIDEO</span>
+        {% else %}
+          <img src="{{ url_for('uploaded_file', filename=file.filename) }}" alt="{{ file.title }}" loading="lazy" onerror="this.outerHTML='<div class=&quot;media-fallback media-fallback--wide&quot;>🖼️</div>'">
+          <span class="porno-card__type">PHOTO</span>
+        {% endif %}
+      </a>
+      <div class="porno-card__body">
+        <h3>{{ file.title }}</h3>
+        <p>{{ file.description or 'Без описания' }}</p>
+        <div class="chips">
+          {% if logged_in %}
+            {% for cat in porno_categories %}
+              {% if cat.id in [] %}{% endif %}
+            {% endfor %}
+          {% endif %}
+          <span class="chip chip--muted">{{ file.views }} просмотров</span>
+          <span class="chip chip--muted">{{ (file.filesize / 1024 / 1024)|round(1) }} МБ</span>
+        </div>
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <div class="empty-state__icon">18+</div>
+    <h3>В этой категории пока пусто</h3>
+    <p>Нет фото или видео, подходящих под выбранные фильтры.</p>
+    {% if logged_in %}<a class="button" href="{{ url_for('porno_upload_page') }}">Добавить медиа</a>{% endif %}
+  </div>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+{% if logged_in %}
+<script>
+(() => {
+  const button = document.getElementById('addPornoCategoryBtn');
+  const input = document.getElementById('pornoCategoryName');
+  if (!button || !input) return;
+  button.addEventListener('click', async () => {
+    const name = input.value.trim();
+    if (!name) return;
+    const body = new FormData();
+    body.append('name', name);
+    const response = await fetch('{{ url_for("add_porno_category") }}', {method: 'POST', body});
+    const data = await response.json();
+    if (!response.ok) return alert(data.message || 'Не удалось создать категорию.');
+    window.location.reload();
+  });
+})();
+</script>
+{% endif %}
+{% endblock %}
