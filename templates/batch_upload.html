@@ -1,0 +1,360 @@
+{% extends "base.html" %}
+{% block title %}Пакетная загрузка · LocalTube{% endblock %}
+
+{% block content %}
+<section class="page-header">
+  <div>
+    <p class="eyebrow">Скрытый инструмент администратора</p>
+    <h1>Пакетная загрузка</h1>
+    <p class="hero__text">Выберите сразу много файлов, назначьте им общие категории, а затем поправьте название, описание и дополнительные категории для каждого файла отдельно.</p>
+  </div>
+</section>
+
+<section class="panel batch-toolbar">
+  <div class="batch-toolbar__top">
+    <div>
+      <h2>1. Общие настройки пакета</h2>
+      <p class="muted">Эти категории применяются ко всем файлам, кроме отмеченных как «без общих категорий».</p>
+    </div>
+    <div class="batch-toolbar__actions">
+      <label class="button button--ghost batch-file-picker">
+        Выбрать файлы
+        <input id="batchFileInput" type="file" multiple hidden>
+      </label>
+      <button class="button button--ghost" id="clearBatchBtn" type="button">Очистить</button>
+    </div>
+  </div>
+  <div class="field">
+    <label>Общие категории</label>
+    <div class="batch-category-grid">
+      {% for cat in categories %}
+      <label class="category-item batch-common-category">
+        <input type="checkbox" value="{{ cat.id }}">
+        <span>{{ cat.name }}</span>
+      </label>
+      {% endfor %}
+      {% if not categories %}<span class="muted">Обычных категорий пока нет.</span>{% endif %}
+    </div>
+  </div>
+</section>
+
+<section class="panel batch-files-panel">
+  <div class="section-heading">
+    <div>
+      <h2>2. Файлы</h2>
+      <p id="batchSummary">Файлы ещё не выбраны</p>
+    </div>
+    <div class="batch-actions">
+      <button class="button" id="startBatchBtn" type="button" disabled>Загрузить пакет</button>
+    </div>
+  </div>
+
+  <div id="batchEmpty" class="empty-state empty-state--compact">
+    <div class="empty-state__icon">📦</div>
+    <h3>Пока пусто</h3>
+    <p>Выберите несколько файлов. Их можно смешивать: видео, аудио, изображения и другие файлы.</p>
+  </div>
+
+  <div id="batchList" class="batch-list"></div>
+
+  <div id="batchProgress" class="batch-progress is-hidden">
+    <div class="batch-progress__heading">
+      <strong id="batchProgressTitle">Загрузка</strong>
+      <span id="batchProgressPercent">0%</span>
+    </div>
+    <div class="upload-progress__bar"><span id="batchProgressBar"></span></div>
+    <p id="batchProgressText" class="muted">Подготовка...</p>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(() => {
+  const CHUNK_SIZE = 2 * 1024 * 1024;
+  const input = document.getElementById('batchFileInput');
+  const list = document.getElementById('batchList');
+  const empty = document.getElementById('batchEmpty');
+  const summary = document.getElementById('batchSummary');
+  const startButton = document.getElementById('startBatchBtn');
+  const clearButton = document.getElementById('clearBatchBtn');
+  const progress = document.getElementById('batchProgress');
+  const progressBar = document.getElementById('batchProgressBar');
+  const progressPercent = document.getElementById('batchProgressPercent');
+  const progressTitle = document.getElementById('batchProgressTitle');
+  const progressText = document.getElementById('batchProgressText');
+
+  const serverCategories = {{ categories | tojson }};
+  let items = [];
+  let uploading = false;
+
+  function esc(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function(ch) {
+      return {'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#039;'}[ch];
+    });
+  }
+
+  function formatBytes(bytes) {
+    if (!bytes) return '0 Б';
+    const units = ['Б','КБ','МБ','ГБ'];
+    const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+    return (bytes / Math.pow(1024, index)).toFixed(index ? 1 : 0) + ' ' + units[index];
+  }
+
+  function mediaKind(file) {
+    if ((file.type || '').startsWith('video/')) return 'video';
+    if ((file.type || '').startsWith('audio/')) return 'audio';
+    if ((file.type || '').startsWith('image/')) return 'image';
+    const ext = file.name.toLowerCase().split('.').pop();
+    if (['mp4','avi','mov','mkv','flv','wmv','webm','m4v'].includes(ext)) return 'video';
+    if (['mp3','wav','ogg','flac','aac','m4a'].includes(ext)) return 'audio';
+    if (['jpg','jpeg','png','gif','webp','avif','bmp'].includes(ext)) return 'image';
+    return 'other';
+  }
+
+  function uniqueStoredName(name, seen) {
+    if (!seen.has(name)) {
+      seen.add(name);
+      return name;
+    }
+    const dot = name.lastIndexOf('.');
+    const stem = dot > 0 ? name.slice(0, dot) : name;
+    const ext = dot > 0 ? name.slice(dot) : '';
+    let n = 2;
+    let candidate = stem + '__batch' + n + ext;
+    while (seen.has(candidate)) {
+      n += 1;
+      candidate = stem + '__batch' + n + ext;
+    }
+    seen.add(candidate);
+    return candidate;
+  }
+
+  function previewMarkup(item) {
+    const url = URL.createObjectURL(item.file);
+    if (item.kind === 'image') {
+      return '<img src="' + url + '" alt="">';
+    }
+    if (item.kind === 'video') {
+      return '<video muted preload="metadata" src="' + url + '"></video><span class="batch-item__media-badge">VIDEO</span>';
+    }
+    if (item.kind === 'audio') {
+      return '<div class="batch-item__generic">♪</div><span class="batch-item__media-badge">AUDIO</span>';
+    }
+    return '<div class="batch-item__generic">📄</div>';
+  }
+
+  function renderItems() {
+    list.innerHTML = '';
+
+    items.forEach(function(item, index) {
+      const node = document.createElement('article');
+      node.className = 'batch-item';
+      node.dataset.index = String(index);
+
+      const categoryHtml = serverCategories.map(function(cat) {
+        return '<label class="category-item"><input class="batch-extra-category" type="checkbox" value="' +
+          cat.id + '"><span>' + esc(cat.name) + '</span></label>';
+      }).join('');
+
+      let typeSpecific = '';
+      if (item.kind === 'video') {
+        typeSpecific = '<div class="field"><label>Кадр превью (сек)</label><input class="batch-thumb-time" type="number" min="0" step="0.1" value="10"></div>';
+      }
+      if (item.kind === 'audio') {
+        typeSpecific =
+          '<div class="field"><label>Исполнитель</label><input class="batch-artist" type="text" placeholder="Исполнитель"></div>' +
+          '<div class="field"><label>Альбом</label><input class="batch-album" type="text" placeholder="Альбом"></div>' +
+          '<div class="field"><label>№ трека</label><input class="batch-track" type="number" min="1" step="1" placeholder="—"></div>';
+      }
+
+      node.innerHTML =
+        '<div class="batch-item__head">' +
+          '<div class="batch-item__number">' + (index + 1) + '</div>' +
+          '<div class="batch-item__preview">' + previewMarkup(item) + '</div>' +
+          '<div class="batch-item__file">' +
+            '<strong title="' + esc(item.file.name) + '">' + esc(item.file.name) + '</strong>' +
+            '<span>' + formatBytes(item.file.size) + ' · ' + esc(item.kind.toUpperCase()) + '</span>' +
+            (item.storedName !== item.file.name ? '<small>Имя на диске: ' + esc(item.storedName) + '</small>' : '') +
+          '</div>' +
+          '<button class="icon-button icon-button--small batch-remove" type="button" aria-label="Убрать файл">×</button>' +
+        '</div>' +
+        '<div class="batch-item__form form-grid">' +
+          '<div class="field field--full"><label>Название</label><input class="batch-title" type="text" value="' + esc(item.file.name) + '"></div>' +
+          '<div class="field field--full"><label>Описание</label><textarea class="batch-description" rows="3" placeholder="Необязательное описание"></textarea></div>' +
+          '<div class="field field--full"><label class="batch-inline-toggle"><input class="batch-no-common" type="checkbox"><span>Не применять общие категории к этому файлу</span></label></div>' +
+          '<div class="field field--full"><label>Дополнительные категории</label><div class="batch-category-grid batch-category-grid--compact">' +
+            (categoryHtml || '<span class="muted">Обычных категорий пока нет.</span>') +
+          '</div></div>' +
+          typeSpecific +
+        '</div>';
+
+      node.querySelector('.batch-remove').addEventListener('click', function() {
+        if (uploading) return;
+        items.splice(index, 1);
+        renderItems();
+        updateState();
+      });
+
+      list.appendChild(node);
+    });
+  }
+
+  function updateState() {
+    const count = items.length;
+    empty.classList.toggle('is-hidden', count > 0);
+    list.classList.toggle('is-hidden', count === 0);
+    summary.textContent = count ? (count + ' ' + (count === 1 ? 'файл выбран' : 'файлов выбрано')) : 'Файлы ещё не выбраны';
+    startButton.disabled = count === 0 || uploading;
+  }
+
+  input.addEventListener('change', function() {
+    if (uploading) return;
+    const selected = Array.from(input.files || []);
+    const seen = new Set(items.map(function(item) { return item.storedName; }));
+    selected.forEach(function(file) {
+      items.push({
+        file: file,
+        kind: mediaKind(file),
+        storedName: uniqueStoredName(file.name, seen)
+      });
+    });
+    renderItems();
+    updateState();
+    input.value = '';
+  });
+
+  clearButton.addEventListener('click', function() {
+    if (uploading) return;
+    items = [];
+    renderItems();
+    updateState();
+    progress.classList.add('is-hidden');
+  });
+
+  function commonCategoryIds() {
+    return Array.from(document.querySelectorAll('.batch-common-category input'))
+      .filter(function(input) { return input.checked; })
+      .map(function(input) { return input.value; });
+  }
+
+  function collectItem(node, index) {
+    const item = items[index];
+    return Object.assign({}, item, {
+      title: node.querySelector('.batch-title') ? node.querySelector('.batch-title').value.trim() || item.file.name : item.file.name,
+      description: node.querySelector('.batch-description') ? node.querySelector('.batch-description').value : '',
+      noCommon: node.querySelector('.batch-no-common') ? node.querySelector('.batch-no-common').checked : false,
+      extraCategories: Array.from(node.querySelectorAll('.batch-extra-category:checked')).map(function(input) { return input.value; }),
+      thumbTime: node.querySelector('.batch-thumb-time') ? node.querySelector('.batch-thumb-time').value : '',
+      artist: node.querySelector('.batch-artist') ? node.querySelector('.batch-artist').value.trim() : '',
+      album: node.querySelector('.batch-album') ? node.querySelector('.batch-album').value.trim() : '',
+      track: node.querySelector('.batch-track') ? node.querySelector('.batch-track').value.trim() : ''
+    });
+  }
+
+  async function uploadChunks(item, onProgress) {
+    const totalChunks = Math.max(1, Math.ceil(item.file.size / CHUNK_SIZE));
+
+    for (let currentChunk = 0; currentChunk < totalChunks; currentChunk++) {
+      const start = currentChunk * CHUNK_SIZE;
+      const blob = item.file.slice(start, Math.min(start + CHUNK_SIZE, item.file.size));
+      const formData = new FormData();
+      formData.append('file', blob);
+      formData.append('filename', item.storedName);
+      formData.append('chunk', currentChunk);
+      formData.append('total', totalChunks);
+
+      const response = await fetch('{{ url_for("upload_chunk") }}', {method:'POST', body:formData});
+      if (!response.ok) {
+        const data = await response.json().catch(function() { return {}; });
+        throw new Error(data.message || ('Ошибка загрузки части ' + (currentChunk + 1)));
+      }
+      onProgress((currentChunk + 1) / totalChunks);
+    }
+  }
+
+  async function finalizeItem(item, commonIds) {
+    const data = new FormData();
+    data.append('filename', item.storedName);
+    data.append('title', item.title);
+    data.append('description', item.description);
+    data.append('thumb_time', item.thumbTime);
+
+    const categories = item.noCommon ? item.extraCategories : commonIds.concat(item.extraCategories);
+    Array.from(new Set(categories)).forEach(function(id) { data.append('categories', id); });
+
+    if (item.kind === 'audio') {
+      data.append('artist', item.artist);
+      data.append('album', item.album);
+      data.append('track_number', item.track);
+    }
+
+    const response = await fetch('{{ url_for("finalize_upload") }}', {method:'POST', body:data});
+    if (!response.ok) {
+      let message = 'Не удалось сохранить файл';
+      try {
+        const body = await response.json();
+        if (body.message) message = body.message;
+      } catch (_) {}
+      throw new Error(message);
+    }
+  }
+
+  startButton.addEventListener('click', async function() {
+    if (!items.length || uploading) return;
+
+    uploading = true;
+    updateState();
+    progress.classList.remove('is-hidden');
+
+    const nodes = Array.from(list.querySelectorAll('.batch-item'));
+    const commonIds = commonCategoryIds();
+    const totalFiles = items.length;
+    let completed = 0;
+
+    try {
+      for (let index = 0; index < totalFiles; index++) {
+        const node = nodes[index];
+        const item = collectItem(node, index);
+        node.classList.add('is-uploading');
+        progressTitle.textContent = 'Файл ' + (index + 1) + ' из ' + totalFiles;
+        progressText.textContent = 'Загрузка: ' + item.file.name;
+
+        await uploadChunks(item, function(fraction) {
+          const overall = ((completed + fraction) / totalFiles) * 100;
+          progressBar.style.width = Math.round(overall) + '%';
+          progressPercent.textContent = Math.round(overall) + '%';
+        });
+
+        progressText.textContent = 'Сохраняю метаданные: ' + item.file.name;
+        await finalizeItem(item, commonIds);
+
+        completed += 1;
+        node.classList.remove('is-uploading');
+        node.classList.add('is-uploaded');
+        progressBar.style.width = Math.round((completed / totalFiles) * 100) + '%';
+        progressPercent.textContent = Math.round((completed / totalFiles) * 100) + '%';
+      }
+
+      progressTitle.textContent = 'Готово';
+      progressText.textContent = 'Загружено файлов: ' + completed;
+      startButton.textContent = 'Пакет загружен';
+      startButton.disabled = true;
+    } catch (error) {
+      const failedIndex = nodes.findIndex(function(node) { return node.classList.contains('is-uploading'); });
+      if (failedIndex >= 0) {
+        nodes[failedIndex].classList.remove('is-uploading');
+        nodes[failedIndex].classList.add('is-failed');
+      }
+      progressTitle.textContent = 'Загрузка остановлена';
+      progressText.textContent = error.message;
+      uploading = false;
+      startButton.disabled = false;
+    }
+  });
+
+  renderItems();
+  updateState();
+})();
+</script>
+{% endblock %}
