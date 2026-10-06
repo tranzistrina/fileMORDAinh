@@ -574,6 +574,121 @@ def categories_page():
     conn.close()
     return render_template("categories.html", categories=categories)
 
+@app.route("/porno")
+def porno_page():
+    search = request.args.get("q", "").strip()
+    category_id = request.args.get("category", type=int)
+    sort = request.args.get("sort", "date")
+    if sort not in {"date", "views", "title"}:
+        sort = "date"
+
+    conn = get_db()
+    query = """SELECT DISTINCT f.*
+               FROM files f
+               JOIN file_category fc ON fc.file_id = f.id
+               JOIN categories c ON c.id = fc.category_id
+               WHERE LOWER(TRIM(c.name)) = 'porno'
+                 AND f.file_type IN ('image', 'video')"""
+    params = []
+
+    if not is_admin():
+        query += """ AND NOT EXISTS (
+            SELECT 1
+            FROM file_category private_fc
+            JOIN categories private_c ON private_c.id = private_fc.category_id
+            WHERE private_fc.file_id = f.id
+              AND LOWER(TRIM(private_c.name)) = 'privat'
+        )"""
+
+    if category_id:
+        query += """ AND EXISTS (
+            SELECT 1
+            FROM file_porno_category fpc_filter
+            WHERE fpc_filter.file_id = f.id
+              AND fpc_filter.category_id = ?
+        )"""
+        params.append(category_id)
+
+    if search:
+        query += """ AND (
+            LOWER(f.title) LIKE ?
+            OR LOWER(f.filename) LIKE ?
+            OR LOWER(COALESCE(f.description, '')) LIKE ?
+        )"""
+        needle = f"%{search.lower()}%"
+        params.extend([needle, needle, needle])
+
+    if sort == "views":
+        query += " ORDER BY f.views DESC, f.upload_date DESC"
+    elif sort == "title":
+        query += " ORDER BY LOWER(f.title) ASC, f.upload_date DESC"
+    else:
+        query += " ORDER BY f.upload_date DESC"
+
+    files = conn.execute(query, tuple(params)).fetchall()
+    porno_categories = conn.execute(
+        """SELECT pc.id, pc.name, COUNT(fpc.file_id) AS file_count
+           FROM porno_categories pc
+           LEFT JOIN file_porno_category fpc ON fpc.category_id = pc.id
+           GROUP BY pc.id
+           ORDER BY LOWER(pc.name) ASC"""
+    ).fetchall()
+    conn.close()
+
+    return render_template(
+        "porno.html",
+        files=files,
+        porno_categories=porno_categories,
+        selected_category=category_id,
+        search=search,
+        sort=sort,
+    )
+
+
+@app.route("/porno/category", methods=["POST"])
+@admin_required
+def add_porno_category():
+    name = request.form.get("name", "").strip()
+    if not name:
+        return jsonify({"status": "error", "message": "Введите название категории"}), 400
+    conn = get_db()
+    try:
+        conn.execute("INSERT INTO porno_categories(name) VALUES (?)", (name,))
+        conn.commit()
+    except sqlite3.IntegrityError:
+        row = conn.execute(
+            "SELECT id, name FROM porno_categories WHERE LOWER(name) = LOWER(?) LIMIT 1",
+            (name,),
+        ).fetchone()
+        conn.close()
+        return jsonify({"status": "ok", "id": row["id"], "name": row["name"]}) if row else (
+            jsonify({"status": "error", "message": "Категория уже существует"}), 409
+        )
+    row = conn.execute(
+        "SELECT id, name FROM porno_categories WHERE id = last_insert_rowid()"
+    ).fetchone()
+    conn.close()
+    return jsonify({"status": "ok", "id": row["id"], "name": row["name"]})
+
+
+@app.route("/porno/upload")
+@admin_required
+def porno_upload_page():
+    conn = get_db()
+    porno_categories = conn.execute(
+        "SELECT * FROM porno_categories ORDER BY LOWER(name) ASC"
+    ).fetchall()
+    conn.close()
+    return render_template("porno_upload.html", porno_categories=porno_categories)
+
+
+@app.route("/porno/<int:file_id>", methods=["GET", "POST"])
+def porno_file_page(file_id):
+    if not is_porno_file(file_id):
+        abort(404)
+    return file_page(file_id, porno_mode=True)
+
+
 @app.route("/scan_files")
 @admin_required
 def scan_files():
@@ -698,6 +813,9 @@ def upload_chunk():
     if file is None or not original_filename:
         return jsonify({"status": "error", "message": "Файл не передан"}), 400
     filename = safe_upload_name(original_filename)
+    porno_mode = request.form.get("porno_mode") == "1"
+    if porno_mode and get_file_type(filename) not in {"image", "video"}:
+        return jsonify({"status": "error", "message": "В разделе porno разрешены только фото и видео"}), 400
     try:
         chunk_number = int(request.form["chunk"])
         total_chunks = int(request.form["total"])
@@ -726,10 +844,14 @@ def finalize_upload():
     desc = request.form.get("description", "")
     thumb_time = request.form.get("thumb_time")
     selected_categories = request.form.getlist("categories")
+    selected_porno_categories = request.form.getlist("porno_categories")
+    porno_mode = request.form.get("porno_mode") == "1"
     path = UPLOAD_FOLDER / filename
     if not path.is_file():
         return jsonify({"status": "error", "message": "Загруженный файл не найден"}), 400
     ftype = get_file_type(filename)
+    if porno_mode and ftype not in {"image", "video"}:
+        return jsonify({"status": "error", "message": "В разделе porno разрешены только фото и видео"}), 400
     length = get_video_length(path) if ftype == "video" else None
     conn = get_db()
     c = conn.cursor()
@@ -743,6 +865,26 @@ def finalize_upload():
                 c.execute("INSERT OR IGNORE INTO file_category(file_id, category_id) VALUES (?, ?)", (file_id, int(cat)))
             except (TypeError, ValueError):
                 pass
+
+        if porno_mode:
+            porno_row = c.execute(
+                "SELECT id FROM categories WHERE LOWER(TRIM(name))='porno' LIMIT 1"
+            ).fetchone()
+            if not porno_row:
+                raise sqlite3.IntegrityError("Missing porno category")
+            c.execute(
+                "INSERT OR IGNORE INTO file_category(file_id, category_id) VALUES (?, ?)",
+                (file_id, porno_row["id"]),
+            )
+            for cat in selected_porno_categories:
+                try:
+                    c.execute(
+                        "INSERT OR IGNORE INTO file_porno_category(file_id, category_id) VALUES (?, ?)",
+                        (file_id, int(cat)),
+                    )
+                except (TypeError, ValueError):
+                    pass
+
         if ftype == "audio":
             aud_row = c.execute("SELECT id FROM categories WHERE LOWER(TRIM(name))='aud' LIMIT 1").fetchone()
             if aud_row:
@@ -758,6 +900,8 @@ def finalize_upload():
             generate_thumbnail(path, file_id, max(0.0, float(thumb_time)))
         except (ValueError, TypeError):
             pass
+    if porno_mode:
+        return redirect(url_for("porno_page"))
     return redirect(url_for("index"))
 
 @app.route("/uploads/<path:filename>")
