@@ -823,6 +823,17 @@ def file_page(file_id, porno_mode=False):
         recommendations=recommendations,
     )
 
+@app.route("/pac")
+@admin_required
+def batch_upload_page():
+    conn = get_db()
+    categories = conn.execute(
+        "SELECT * FROM categories WHERE LOWER(TRIM(name)) NOT IN ('privat', 'aud', 'porno') ORDER BY LOWER(name) ASC"
+    ).fetchall()
+    conn.close()
+    return render_template("batch_upload.html", categories=categories)
+
+
 @app.route("/upload")
 @admin_required
 def upload_page():
