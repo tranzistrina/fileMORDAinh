@@ -757,6 +757,13 @@ def file_page(file_id, porno_mode=False):
         if file["file_type"] == "audio" and aud_tag:
             aud_row=c.execute("SELECT id FROM categories WHERE LOWER(TRIM(name))='aud' LIMIT 1").fetchone()
             if aud_row: category_ids.append(aud_row["id"])
+        if porno_mode:
+            porno_row = c.execute(
+                "SELECT id FROM categories WHERE LOWER(TRIM(name))='porno' LIMIT 1"
+            ).fetchone()
+            if porno_row:
+                category_ids.append(porno_row["id"])
+
         for cat_id in dict.fromkeys(category_ids):
             c.execute("INSERT OR IGNORE INTO file_category(file_id, category_id) VALUES (?,?)",(file_id,cat_id))
 
