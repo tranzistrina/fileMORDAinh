@@ -259,7 +259,7 @@ def get_porno_recommendations(file_id, limit=8):
     conn = get_db()
     try:
         base_ids = get_porno_category_ids(file_id)
-        params = [file_id]
+        params = list(base_ids) + [file_id] if base_ids else [file_id]
         if base_ids:
             placeholders = ",".join("?" for _ in base_ids)
             overlap_expr = f"COUNT(DISTINCT CASE WHEN matched_pc.category_id IN ({placeholders}) THEN matched_pc.category_id END)"
