@@ -641,14 +641,16 @@ def porno_page():
            ORDER BY LOWER(pc.name) ASC"""
     ).fetchall()
     category_rows = conn.execute(
-        """SELECT fpc.file_id, pc.name
+        """SELECT fpc.file_id, pc.id AS category_id, pc.name
            FROM file_porno_category fpc
            JOIN porno_categories pc ON pc.id = fpc.category_id
            ORDER BY LOWER(pc.name) ASC"""
     ).fetchall()
     file_porno_categories = {}
     for row in category_rows:
-        file_porno_categories.setdefault(row["file_id"], []).append(row["name"])
+        file_porno_categories.setdefault(row["file_id"], []).append(
+            {"id": row["category_id"], "name": row["name"]}
+        )
     conn.close()
 
     return render_template(
