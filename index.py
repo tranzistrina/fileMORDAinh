@@ -827,10 +827,11 @@ def file_page(file_id, porno_mode=False):
 @admin_required
 def batch_upload_page():
     conn = get_db()
-    categories = conn.execute(
-        "SELECT * FROM categories WHERE LOWER(TRIM(name)) NOT IN ('aud', 'porno') ORDER BY LOWER(name) ASC"
+    rows = conn.execute(
+        "SELECT id, name FROM categories WHERE LOWER(TRIM(name)) NOT IN ('aud', 'porno') ORDER BY LOWER(name) ASC"
     ).fetchall()
     conn.close()
+    categories = [{"id": row["id"], "name": row["name"]} for row in rows]
     return render_template("batch_upload.html", categories=categories)
 
 
