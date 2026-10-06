@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block title %}Добавить в Porno · LocalTube{% endblock %}
+{% block content %}
+<section class="page-header">
+  <div>
+    <p class="eyebrow">Porno</p>
+    <h1>Добавить фото или видео</h1>
+    <p class="hero__text">Этот загрузчик принимает только изображения и видео и автоматически ставит системную категорию <code>porno</code>.</p>
+  </div>
+</section>
+
+<div class="detail-layout detail-layout--upload">
+  <section class="panel">
+    <h2>1. Файл</h2>
+    <div class="upload-dropzone">
+      <input type="file" id="fileInput" accept="image/*,video/*">
+      <p>Перетащите изображение или видео сюда или выберите файл</p>
+      <small>Поддерживаются фото и видео браузера; сервер дополнительно проверяет расширение.</small>
+    </div>
+    <div id="previewContainer" class="preview-box is-hidden">
+      <img id="previewImage" class="porno-upload-preview is-hidden" alt="Предпросмотр">
+      <video id="previewVideo" class="media-player is-hidden" controls></video>
+      <div id="previewOther" class="media-fallback media-fallback--wide is-hidden">Формат не поддерживается</div>
+    </div>
+    <div class="upload-progress">
+      <div class="upload-progress__bar"><span id="progressBar"></span></div>
+      <div class="upload-progress__text" id="progressText">Ожидание загрузки</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>2. Метаданные</h2>
+    <div class="form-grid">
+      <div class="field field--full"><label for="title">Название</label><input id="title" type="text" placeholder="Название"></div>
+      <div class="field field--full"><label for="description">Описание</label><textarea id="description" rows="5" placeholder="Необязательное описание"></textarea></div>
+      <div class="field field--full">
+        <label>Категории porno</label>
+        <div class="category-list category-list--compact">
+          {% for cat in porno_categories %}
+          <label class="category-item"><input type="checkbox" class="porno-category" value="{{ cat.id }}"><span>{{ cat.name }}</span></label>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="field">
+        <label for="thumb_time">Кадр превью для видео (сек)</label>
+        <input type="number" id="thumb_time" value="10" min="0" step="0.1">
+      </div>
+      <div class="field field--actions-inline">
+        <button class="button" type="button" id="uploadButton">Начать загрузку</button>
+      </div>
+      <div class="field field--full"><a class="button button--ghost" href="{{ url_for('porno_page') }}">Отмена</a></div>
+    </div>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const CHUNK_SIZE = 2 * 1024 * 1024;
+const fileInput = document.getElementById('fileInput');
+const previewImage = document.getElementById('previewImage');
+const previewVideo = document.getElementById('previewVideo');
+const previewOther = document.getElementById('previewOther');
+const previewContainer = document.getElementById('previewContainer');
+const progressBar = document.getElementById('progressBar');
+const progressText = document.getElementById('progressText');
+const uploadButton = document.getElementById('uploadButton');
+
+function setProgress(percent, text) {
+  progressBar.style.width = percent + '%';
+  progressText.textContent = text;
+}
+
+fileInput.addEventListener('change', (event) => {
+  const file = event.target.files[0];
+  if (!file) return;
+  document.getElementById('title').value ||= file.name;
+  previewContainer.classList.remove('is-hidden');
+  [previewImage, previewVideo, previewOther].forEach(el => el.classList.add('is-hidden'));
+  if ((file.type || '').startsWith('image/')) {
+    previewImage.src = URL.createObjectURL(file);
+    previewImage.classList.remove('is-hidden');
+  } else if ((file.type || '').startsWith('video/')) {
+    previewVideo.src = URL.createObjectURL(file);
+    previewVideo.classList.remove('is-hidden');
+  } else {
+    previewOther.classList.remove('is-hidden');
+  }
+  setProgress(0, 'Выбран файл: ' + file.name);
+});
+
+async function uploadFile() {
+  const file = fileInput.files[0];
+  if (!file) return alert('Сначала выберите фото или видео');
+  uploadButton.disabled = true;
+  try {
+    const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
+    for (let currentChunk = 0; currentChunk < totalChunks; currentChunk++) {
+      const blob = file.slice(currentChunk * CHUNK_SIZE, Math.min((currentChunk + 1) * CHUNK_SIZE, file.size));
+      const body = new FormData();
+      body.append('file', blob);
+      body.append('filename', file.name);
+      body.append('chunk', currentChunk);
+      body.append('total', totalChunks);
+      body.append('porno_mode', '1');
+      const response = await fetch('{{ url_for("upload_chunk") }}', {method:'POST', body});
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.message || 'Ошибка загрузки чанка');
+      }
+      const percent = Math.round(((currentChunk + 1) / totalChunks) * 100);
+      setProgress(percent, 'Загрузка: ' + percent + '%');
+    }
+
+    const finalize = new FormData();
+    finalize.append('filename', file.name);
+    finalize.append('title', document.getElementById('title').value || file.name);
+    finalize.append('description', document.getElementById('description').value);
+    finalize.append('thumb_time', document.getElementById('thumb_time').value);
+    finalize.append('porno_mode', '1');
+    document.querySelectorAll('.porno-category:checked').forEach(cb => finalize.append('porno_categories', cb.value));
+    setProgress(100, 'Сохранение...');
+    const response = await fetch('{{ url_for("finalize_upload") }}', {method:'POST', body:finalize});
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.message || 'Не удалось сохранить файл');
+    }
+    window.location.href = '{{ url_for("porno_page") }}';
+  } catch (error) {
+    setProgress(0, error.message);
+    uploadButton.disabled = false;
+    alert(error.message);
+  }
+}
+uploadButton.addEventListener('click', uploadFile);
+</script>
+{% endblock %}

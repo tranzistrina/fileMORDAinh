@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %}{{ file.title }} · Porno · LocalTube{% endblock %}
+{% block content %}
+<section class="page-header porno-page-header">
+  <div>
+    <p class="eyebrow">Porno · {{ file.file_type|upper }}</p>
+    <h1>{{ file.title }}</h1>
+    <p class="hero__text">{{ file.description or 'Без описания' }}</p>
+  </div>
+  <div class="hero__actions">
+    <a class="button button--ghost" href="{{ url_for('porno_page') }}">← Галерея</a>
+    <a class="button" href="{{ url_for('download_file', filename=file.filename) }}">Скачать</a>
+  </div>
+</section>
+
+<div class="porno-detail-layout">
+  <section class="panel porno-viewer-panel">
+    {% if file.file_type == 'video' %}
+      <video id="mediaPlayer" class="porno-player" controls preload="metadata" playsinline>
+        <source src="{{ url_for('uploaded_file', filename=file.filename) }}">
+        Ваш браузер не поддерживает видео.
+      </video>
+    {% else %}
+      <div class="porno-image-viewer">
+        <img src="{{ url_for('uploaded_file', filename=file.filename) }}" alt="{{ file.title }}">
+      </div>
+    {% endif %}
+    <div class="porno-detail-meta">
+      {% for cat in porno_categories %}
+        {% if cat.id in porno_file_cats %}
+          <a class="chip" href="{{ url_for('porno_page', category=cat.id) }}">{{ cat.name }}</a>
+        {% endif %}
+      {% endfor %}
+      <span class="chip chip--muted">{{ file.views }} просмотров</span>
+      <span class="chip chip--muted">{{ (file.filesize / 1024 / 1024)|round(1) }} МБ</span>
+      {% if file.length %}<span class="chip chip--muted">{{ file.length|round(0)|int }} сек</span>{% endif %}
+    </div>
+  </section>
+
+  {% if logged_in %}
+  <section class="panel">
+    <h2>Настройки</h2>
+    <form method="POST" class="form-grid" id="pornoEditForm">
+      <div class="field field--full">
+        <label for="title">Название</label>
+        <input id="title" type="text" name="title" value="{{ file.title }}" required>
+      </div>
+      <div class="field field--full">
+        <label for="description">Описание</label>
+        <textarea id="description" name="description" rows="5">{{ file.description }}</textarea>
+      </div>
+      <div class="field field--full">
+        <div class="label-row"><label>Категории porno</label><span class="muted">Только для этой галереи</span></div>
+        <div class="category-list category-list--compact">
+          {% for cat in porno_categories %}
+          <label class="category-item">
+            <input type="checkbox" name="porno_categories" value="{{ cat.id }}" {% if cat.id in porno_file_cats %}checked{% endif %}>
+            <span>{{ cat.name }}</span>
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+      {% if file.file_type == 'video' %}
+      <div class="field">
+        <label for="thumb_time">Кадр превью (сек)</label>
+        <input type="number" name="thumb_time" id="thumb_time" value="10" min="0" step="0.1">
+      </div>
+      <div class="field field--actions-inline">
+        <button type="button" class="button button--ghost" id="updateThumbBtn">Обновить превью</button>
+      </div>
+      {% endif %}
+      <div class="field field--full">
+        <button class="button" type="submit">Сохранить</button>
+      </div>
+    </form>
+  </section>
+  {% endif %}
+</div>
+
+<section class="content-section porno-recommendations">
+  <div class="section-heading">
+    <div>
+      <h2>Похожие</h2>
+      <p>Сначала элементы с пересекающимися категориями, затем свежие.</p>
+    </div>
+  </div>
+  {% if recommendations %}
+  <div class="porno-grid porno-grid--recommendations">
+    {% for rec in recommendations %}
+    <article class="porno-card">
+      <a class="porno-card__media" href="{{ url_for('porno_file_page', file_id=rec.id) }}">
+        {% if rec.file_type == 'video' %}
+          <img src="{{ url_for('thumb_file', filename=rec.id ~ '.jpg') }}" alt="{{ rec.title }}" loading="lazy" onerror="this.outerHTML='<div class=&quot;media-fallback media-fallback--wide&quot;>▶ Видео</div>'">
+          <span class="porno-card__type">VIDEO</span>
+        {% else %}
+          <img src="{{ url_for('uploaded_file', filename=rec.filename) }}" alt="{{ rec.title }}" loading="lazy">
+          <span class="porno-card__type">PHOTO</span>
+        {% endif %}
+      </a>
+      <div class="porno-card__body"><h3>{{ rec.title }}</h3><p>{{ rec.views }} просмотров · {{ (rec.filesize / 1024 / 1024)|round(1) }} МБ</p></div>
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state empty-state--compact"><h3>Пока нечего рекомендовать</h3><p>Добавьте больше медиа и свяжите их подкатегориями.</p></div>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+{% if logged_in and file.file_type == 'video' %}
+<script>
+(() => {
+  const button = document.getElementById('updateThumbBtn');
+  if (!button) return;
+  button.addEventListener('click', async () => {
+    const form = document.getElementById('pornoEditForm');
+    await fetch('', {method:'POST', body:new FormData(form)});
+    window.location.reload();
+  });
+})();
+</script>
+{% endif %}
+{% endblock %}
